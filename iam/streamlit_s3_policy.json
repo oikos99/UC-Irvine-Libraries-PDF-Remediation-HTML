@@ -1,0 +1,36 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "UploadPdfForProcessing",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject"
+      ],
+      "Resource": "arn:aws:s3:::pdf2html-bucket-947047971739-us-west-2/uploads/*"
+    },
+    {
+      "Sid": "ReadGeneratedHtml",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject"
+      ],
+      "Resource": "arn:aws:s3:::pdf2html-bucket-947047971739-us-west-2/remediated/*"
+    },
+    {
+      "Sid": "CheckWhetherGeneratedHtmlExists",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket"
+      ],
+      "Resource": "arn:aws:s3:::pdf2html-bucket-947047971739-us-west-2",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": [
+            "remediated/*"
+          ]
+        }
+      }
+    }
+  ]
+}
