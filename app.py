@@ -213,7 +213,9 @@ def apply_custom_theme() -> None:
 
         div.stButton > button[kind="primary"],
         div.stButton > button[data-testid="baseButton-primary"],
-        div[data-testid="stFormSubmitButton"] button[kind="primary"] {
+        div[data-testid="stFormSubmitButton"] button[kind="primary"],
+        div[data-testid="stDownloadButton"] > button[kind="primary"],
+        div[data-testid="stDownloadButton"] > button[data-testid="baseButton-primary"] {
           background-color: var(--uci-blue) !important;
           color: #ffffff !important;
           border: 1px solid var(--uci-blue) !important;
@@ -222,7 +224,9 @@ def apply_custom_theme() -> None:
 
         div.stButton > button[kind="primary"]:hover,
         div.stButton > button[data-testid="baseButton-primary"]:hover,
-        div[data-testid="stFormSubmitButton"] button[kind="primary"]:hover {
+        div[data-testid="stFormSubmitButton"] button[kind="primary"]:hover,
+        div[data-testid="stDownloadButton"] > button[kind="primary"]:hover,
+        div[data-testid="stDownloadButton"] > button[data-testid="baseButton-primary"]:hover {
           background-color: var(--uci-blue-hover) !important;
           border-color: var(--uci-blue-hover) !important;
           color: #ffffff !important;
