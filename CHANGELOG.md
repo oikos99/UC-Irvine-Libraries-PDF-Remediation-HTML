@@ -85,3 +85,8 @@
 - Added an app-level CSS fallback that hardcodes UC Irvine colors even when `.streamlit/config.toml` is omitted or not loaded by Streamlit Cloud.
 - Added direct slider styling for the thumb, active bar, and value label.
 - Added branded focus styling for common form controls.
+
+## v19
+- Replaced the CSS-only slider fallback with a runtime UCI brand-color synchronizer.
+- The synchronizer recalculates Streamlit's generated slider `linear-gradient(...)` in UC Irvine blue after rerenders and slider movements.
+- Preserves the active slider percentage while replacing the default red accent.

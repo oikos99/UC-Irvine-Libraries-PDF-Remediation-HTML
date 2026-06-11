@@ -201,6 +201,101 @@ textarea:focus {
     )
 
 
+
+def inject_runtime_brand_styles() -> None:
+    """Keep Streamlit's dynamically generated slider gradient on UCI brand colors.
+
+    Streamlit/BaseWeb generates the active slider track as a runtime linear-gradient
+    using the default theme accent. A normal background-color CSS rule cannot replace
+    that gradient reliably, so this tiny zero-height component updates the parent DOM
+    after rerenders and slider movements.
+    """
+    components.html(
+        r"""
+<script>
+(() => {
+  const BLUE = "rgb(0, 80, 143)";
+  const INACTIVE = "rgba(151, 166, 195, 0.25)";
+  const parentWindow = window.parent;
+  const doc = parentWindow.document;
+
+  function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value));
+  }
+
+  function paintSlider(root) {
+    const thumb = root.querySelector('[role="slider"]');
+    if (!thumb) return;
+
+    const min = Number(thumb.getAttribute('aria-valuemin') || 0);
+    const max = Number(thumb.getAttribute('aria-valuemax') || 100);
+    const now = Number(thumb.getAttribute('aria-valuenow') || min);
+    const pct = max === min ? 0 : clamp(((now - min) / (max - min)) * 100, 0, 100);
+    const gradient = `linear-gradient(to right, ${BLUE} 0%, ${BLUE} ${pct}%, ${INACTIVE} ${pct}%, ${INACTIVE} 100%)`;
+
+    root.querySelectorAll('div').forEach((candidate) => {
+      const computed = parentWindow.getComputedStyle(candidate);
+      if ((computed.backgroundImage || '').includes('linear-gradient') && candidate.dataset.uciGradient !== gradient) {
+        candidate.style.setProperty('background', gradient, 'important');
+        candidate.dataset.uciGradient = gradient;
+      }
+    });
+
+    if (thumb.dataset.uciBrand !== 'true') {
+      thumb.style.setProperty('background-color', BLUE, 'important');
+      thumb.style.setProperty('border-color', BLUE, 'important');
+      thumb.dataset.uciBrand = 'true';
+    }
+
+    root.querySelectorAll('[data-testid="stThumbValue"], [data-testid="stSliderThumbValue"], [class*="ThumbValue"]').forEach((label) => {
+      if (label.dataset.uciBrand !== 'true') {
+        label.style.setProperty('color', BLUE, 'important');
+        label.dataset.uciBrand = 'true';
+      }
+    });
+  }
+
+  let scheduled = false;
+  function paintAllSliders() {
+    if (scheduled) return;
+    scheduled = true;
+    parentWindow.requestAnimationFrame(() => {
+      scheduled = false;
+      doc.querySelectorAll('[data-testid="stSlider"]').forEach(paintSlider);
+    });
+  }
+
+  if (parentWindow.__uciBrandSliderObserver) {
+    parentWindow.__uciBrandSliderObserver.disconnect();
+  }
+  if (parentWindow.__uciBrandSliderHandler) {
+    doc.removeEventListener('input', parentWindow.__uciBrandSliderHandler, true);
+    doc.removeEventListener('change', parentWindow.__uciBrandSliderHandler, true);
+  }
+
+  const observer = new parentWindow.MutationObserver(paintAllSliders);
+  observer.observe(doc.documentElement, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['class', 'style', 'aria-valuenow']
+  });
+  parentWindow.__uciBrandSliderObserver = observer;
+
+  parentWindow.__uciBrandSliderHandler = paintAllSliders;
+  doc.addEventListener('input', paintAllSliders, true);
+  doc.addEventListener('change', paintAllSliders, true);
+
+  paintAllSliders();
+  parentWindow.setTimeout(paintAllSliders, 100);
+  parentWindow.setTimeout(paintAllSliders, 500);
+})();
+</script>
+        """,
+        height=0,
+        width=0,
+    )
+
 def render_page_header() -> None:
     logo_data_url = get_logo_data_url()
     image = f'<img src="{logo_data_url}" alt="UC Irvine Libraries">' if logo_data_url else ""
@@ -838,6 +933,7 @@ def main() -> None:
     apply_custom_theme()
     render_page_header()
     render_dpi = render_sidebar(config)
+    inject_runtime_brand_styles()
     require_access()
 
     if st.session_state.get("review_document"):
