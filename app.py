@@ -157,7 +157,8 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stSidebar"] {
 
 /* Streamlit slider fallback. BaseWeb sliders do not consistently inherit the
    app theme when config.toml is omitted during deployment, so set the visible
-   thumb, active bar, and value label directly. */
+   thumb and value label directly. The active track is recolored separately by
+   inject_runtime_brand_styles() so value bubbles are not painted blue. */
 [data-testid="stSlider"] [role="slider"] {
   background-color: var(--uci-blue) !important;
   border-color: var(--uci-blue) !important;
@@ -166,10 +167,6 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stSidebar"] {
 [data-testid="stSlider"] [data-testid="stSliderThumbValue"],
 [data-testid="stSlider"] [class*="ThumbValue"] {
   color: var(--uci-blue) !important;
-}
-[data-testid="stSlider"] [data-baseweb="slider"] > div > div:first-child,
-[data-testid="stSlider"] [data-baseweb="slider"] > div > div > div:first-child {
-  background-color: var(--uci-blue) !important;
 }
 input[type="range"] { accent-color: var(--uci-blue) !important; }
 

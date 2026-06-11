@@ -90,3 +90,8 @@
 - Replaced the CSS-only slider fallback with a runtime UCI brand-color synchronizer.
 - The synchronizer recalculates Streamlit's generated slider `linear-gradient(...)` in UC Irvine blue after rerenders and slider movements.
 - Preserves the active slider percentage while replacing the default red accent.
+
+## v20
+- Removed an overbroad slider CSS selector that painted the slider value bubble blue and reduced numeric readability.
+- Kept the runtime UCI-blue gradient synchronizer for the actual slider track.
+- Preserved the blue slider thumb and readable blue value text on the normal background.
