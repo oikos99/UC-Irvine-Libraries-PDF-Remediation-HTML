@@ -131,3 +131,27 @@ No JavaScript build process, external JavaScript package, Lambda change, or addi
 ### Zoomable original PDF page panel
 
 Each original PDF page is rendered in a fixed-height image panel with **Zoom out**, **Fit width**, and **Zoom in** controls. When the image panel has keyboard focus, `Ctrl`/`Command` + `+`, `-`, and `0` also adjust or reset the zoom. The panel scrolls when an enlarged image exceeds its visible area.
+
+## Optional AI-assisted page correction
+
+Each page accordion includes **AI-assisted Correction** and **Restore Original Page** controls. The AI correction is optional and runs only when a staff reviewer presses the button for a specific page. The request sends the current tokenized page HTML and the rendered page image to OpenAI. Raw embedded Base64 data is not sent inside the editable HTML fragment.
+
+The OpenAI API key field and its explanatory text appear only after the shared prototype access key has been entered successfully.
+
+The correction prompt treats the screenshot as the authoritative visual source and the existing HTML as a draft. The model is instructed to recover meaningful text regions that OCR omitted, improve semantic HTML, preserve every embedded-image token, and report uncertainty rather than silently inventing content.
+
+After one successful AI correction, the correction button becomes disabled for that page to prevent repeat charges. **Restore Original Page** reverts the working fragment to the original AWS-generated HTML while preserving the one-call-per-page limit.
+
+The collapsed **AI correction details** section displays:
+
+- visible text region inventory
+- intentionally excluded regions
+- AI change summary
+- AI review notes
+- local validation notes
+
+The frontend performs deterministic safety validation before applying an AI result. It blocks unsafe elements, external URLs, raw Base64 values returned by the model, and broken embedded-image token sets. It also warns about suspicious `<br>` overuse, numeric-only or unusually long headings, heading-level skips, tables without useful header markup, and missing or uncertain image alt text. These checks are warnings rather than a WCAG conformance guarantee; staff review remains required.
+
+### Protected backend image sizing
+
+The AWS backend calculates each extracted image's relative width from its crop pixels compared with the original PDF page pixels and records values such as `data-bda-relative-width="31.40"` plus an inline width style. The frontend treats this crop geometry as deterministic protected metadata. AI-assisted correction may improve alt text and surrounding semantic structure, but it is not allowed to enlarge, shrink, or restyle the embedded image dimensions. The app re-applies the original protected image presentation after an AI rewrite and again during final export.

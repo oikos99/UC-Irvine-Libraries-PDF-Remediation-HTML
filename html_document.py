@@ -21,6 +21,92 @@ DATA_URI_RE = re.compile(
     re.IGNORECASE,
 )
 
+PROTECTED_IMAGE_ATTRIBUTE_NAMES = {
+    "class",
+    "style",
+    "width",
+    "height",
+    "data-bda-relative-width",
+    "data-image-width-source",
+}
+
+
+def _embedded_image_token(image: Tag) -> str:
+    """Return the compact embedded-image token used as an img src, if present."""
+    src = str(image.get("src", "")).strip()
+    return src if TOKEN_RE.fullmatch(src) else ""
+
+
+def _is_protected_image_attribute(attribute_name: str) -> bool:
+    """Return whether the backend-calculated image presentation must be retained."""
+    name = attribute_name.lower()
+    return (
+        name in PROTECTED_IMAGE_ATTRIBUTE_NAMES
+        or name.startswith("data-bda-")
+        or name.startswith("data-image-width-")
+        or name.startswith("data-image-size-")
+    )
+
+
+def capture_protected_image_presentation(html_text: str) -> Dict[str, dict]:
+    """Capture deterministic backend image sizing metadata keyed by asset token."""
+    soup = BeautifulSoup(html_text or "", "html.parser")
+    protected: Dict[str, dict] = {}
+    for image in soup.find_all("img"):
+        token = _embedded_image_token(image)
+        if not token:
+            continue
+        protected[token] = {
+            attribute_name: attribute_value
+            for attribute_name, attribute_value in image.attrs.items()
+            if _is_protected_image_attribute(attribute_name)
+        }
+    return protected
+
+
+def enforce_protected_image_presentation(
+    html_text: str,
+    protected_presentation: Dict[str, dict] | None,
+) -> Tuple[str, List[str]]:
+    """
+    Reapply backend-calculated image sizing by stable image token.
+
+    AI and manual semantic edits may change alt text or surrounding structure,
+    but BDA crop geometry remains deterministic and is protected.
+    """
+    protected_presentation = protected_presentation or {}
+    if not protected_presentation:
+        return html_text, []
+
+    soup = BeautifulSoup(html_text or "", "html.parser")
+    warnings: List[str] = []
+
+    for image in soup.find_all("img"):
+        token = _embedded_image_token(image)
+        original = protected_presentation.get(token)
+        if not token or original is None:
+            continue
+
+        changed = False
+        for attribute_name in list(image.attrs):
+            if _is_protected_image_attribute(attribute_name) and attribute_name not in original:
+                del image.attrs[attribute_name]
+                changed = True
+
+        for attribute_name, attribute_value in original.items():
+            if image.attrs.get(attribute_name) != attribute_value:
+                image.attrs[attribute_name] = attribute_value
+                changed = True
+
+        if changed:
+            width = str(original.get("data-bda-relative-width", "")).strip()
+            width_note = f" ({width}% of the PDF page crop)" if width else ""
+            warnings.append(
+                f"Restored backend-calculated image presentation for {token}{width_note}; edited image sizing was not retained."
+            )
+
+    return str(soup), list(dict.fromkeys(warnings))
+
 
 @dataclass
 class PageFragment:
@@ -193,6 +279,7 @@ def prepare_review_document(html_text: str, pdf_page_count: int) -> dict:
     replaced with stable short tokens before fragments are sent to the visual editor.
     """
     tokenized_html, embedded_assets = tokenize_embedded_assets(html_text)
+    protected_image_presentation = capture_protected_image_presentation(tokenized_html)
     soup = BeautifulSoup(tokenized_html, "html.parser")
     warnings: List[str] = []
 
@@ -267,6 +354,7 @@ def prepare_review_document(html_text: str, pdf_page_count: int) -> dict:
         "document_title": title,
         "fragments": [asdict(fragment) for fragment in fragments],
         "embedded_assets": embedded_assets,
+        "protected_image_presentation": protected_image_presentation,
         "warnings": warnings,
     }
 
@@ -349,8 +437,13 @@ def merge_reviewed_document(review_document: dict, edited_fragments: Dict[str, s
         if current is None:
             warnings.append(f"Page container #{element_id} was not found in the complete HTML and was skipped.")
             continue
-        replacement, replacement_warnings = _find_replacement_tag(
+        edited_fragment_html, image_presentation_warnings = enforce_protected_image_presentation(
             edited_fragments.get(element_id, fragment["html"]),
+            review_document.get("protected_image_presentation", {}),
+        )
+        warnings.extend(image_presentation_warnings)
+        replacement, replacement_warnings = _find_replacement_tag(
+            edited_fragment_html,
             element_id,
         )
         warnings.extend(replacement_warnings)
@@ -383,15 +476,65 @@ def validate_complete_html(soup_or_html: BeautifulSoup | str) -> List[str]:
 
     previous_level = None
     for heading in soup.find_all(HEADING_NAMES):
+        heading_text = _clean_text(heading.get_text(" ", strip=True))
         level = int(heading.name[1])
+        if not heading_text:
+            warnings.append(f"An empty <{heading.name}> heading remains in the complete HTML.")
+        elif re.fullmatch(r"[\d\W_]+", heading_text):
+            warnings.append(
+                f"Heading <{heading.name}> contains only numbers or symbols: '{heading_text}'. Confirm that this is a genuine section heading."
+            )
+        elif len(heading_text) > 120:
+            warnings.append(
+                f"Heading <{heading.name}> is unusually long ({len(heading_text)} characters). Confirm that prose has not been marked as a heading."
+            )
         if previous_level is not None and level > previous_level + 1:
             warnings.append(
-                f"Heading hierarchy skips from H{previous_level} to H{level} near: {_first_sentence(heading.get_text(' ', strip=True), 60)}"
+                f"Heading hierarchy skips from H{previous_level} to H{level} near: {_first_sentence(heading_text, 60)}"
             )
-            break
         previous_level = level
 
-    return warnings
+    br_tags = soup.find_all("br")
+    if len(br_tags) >= 3:
+        warnings.append(
+            f"The complete HTML contains {len(br_tags)} <br> elements. Review whether ordinary paragraph wrapping, layout spacing, or pseudo-table rows should use semantic HTML instead."
+        )
+    for parent in soup.find_all(["p", "div", "td", "li"]):
+        child_br_count = len(parent.find_all("br"))
+        if child_br_count >= 2:
+            preview = _first_sentence(parent.get_text(" ", strip=True), 80)
+            warnings.append(
+                f"Repeated <br> elements appear inside <{parent.name}> near '{preview}'. Confirm that the line breaks are meaningful content rather than visual layout."
+            )
+            break
+
+    for index, table in enumerate(soup.find_all("table"), start=1):
+        if not table.find("th"):
+            warnings.append(
+                f"Table {index} does not include any <th> header cells. Confirm that headers are programmatically identified."
+            )
+        for th in table.find_all("th"):
+            if not th.get("scope") and not th.get("id"):
+                warnings.append(
+                    f"Table {index} includes a <th> without scope or id. Review header associations for complex tables."
+                )
+                break
+        if not table.find("caption"):
+            warnings.append(
+                f"Table {index} has no <caption>. Add one when a table title or concise description would help users understand the table."
+            )
+
+    for index, image in enumerate(soup.find_all("img"), start=1):
+        if "alt" not in image.attrs:
+            warnings.append(
+                f"Image {index} is missing an alt attribute. Add meaningful alt text or alt=\"\" if the image is decorative."
+            )
+        else:
+            alt = _clean_text(str(image.get("alt", "")))
+            if re.search(r"\b(unclear|unknown|image of image|possibly decorative|visual cue)\b", alt, flags=re.IGNORECASE):
+                warnings.append(f"Image {index} has uncertain alt text: '{alt[:100]}'. Review it against the scan.")
+
+    return list(dict.fromkeys(warnings))
 
 
 def _safe_preview_fragment(fragment_html: str) -> str:

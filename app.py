@@ -18,10 +18,19 @@ from pypdf import PdfReader
 import streamlit as st
 import streamlit.components.v1 as components
 
+from ai_correction import (
+    AICorrectionError,
+    OPENAI_DEFAULT_MODEL,
+    build_document_outline,
+    normalize_ai_result,
+    request_ai_page_correction,
+    validate_ai_corrected_fragment,
+)
 from html_document import (
     build_document_preview,
     decode_html_bytes,
     embedded_assets_for_text,
+    enforce_protected_image_presentation,
     merge_reviewed_document,
     prepare_review_document,
     preview_style_html,
@@ -181,6 +190,18 @@ def render_sidebar(config: AppConfig) -> int:
         st.subheader("Prototype access")
         if st.session_state.get("access_granted", False):
             st.success("Access granted.")
+
+            st.subheader("OpenAI API")
+            st.text_input(
+                "OpenAI API key",
+                key="openai_api_key",
+                type="password",
+                autocomplete="off",
+                help="Used only during this active session for page-level AI-assisted correction.",
+            )
+            st.caption(
+                f"Optional. The AI-assisted page correction feature uses model **{OPENAI_DEFAULT_MODEL}** and sends the current page image and current page HTML to OpenAI only when you press the AI-assisted Correction button for that page."
+            )
         else:
             entered_key = st.text_input(
                 "Access key",
@@ -327,10 +348,54 @@ def wait_for_html(s3, config: AppConfig, output_key: str) -> bytes:
 
 
 def clear_review_state() -> None:
-    preserved = {"access_granted", "sidebar_access_key"}
+    preserved = {"access_granted", "sidebar_access_key", "openai_api_key"}
     for key in list(st.session_state):
         if key not in preserved:
             del st.session_state[key]
+
+
+def fragment_value_key(review_id: str, element_id: str) -> str:
+    return f"fragment_value_{review_id}_{element_id}"
+
+
+def fragment_editor_key(review_id: str, element_id: str) -> str:
+    return f"fragment_editor_{review_id}_{element_id}"
+
+
+def ai_applied_key(review_id: str, element_id: str) -> str:
+    return f"ai_applied_{review_id}_{element_id}"
+
+
+def ai_summary_key(review_id: str, element_id: str) -> str:
+    return f"ai_summary_{review_id}_{element_id}"
+
+
+def ai_notes_key(review_id: str, element_id: str) -> str:
+    return f"ai_notes_{review_id}_{element_id}"
+
+
+def ai_regions_key(review_id: str, element_id: str) -> str:
+    return f"ai_regions_{review_id}_{element_id}"
+
+
+def ai_excluded_regions_key(review_id: str, element_id: str) -> str:
+    return f"ai_excluded_regions_{review_id}_{element_id}"
+
+
+def ai_needs_review_key(review_id: str, element_id: str) -> str:
+    return f"ai_needs_review_{review_id}_{element_id}"
+
+
+def ai_validation_key(review_id: str, element_id: str) -> str:
+    return f"ai_validation_{review_id}_{element_id}"
+
+
+def ai_error_key(review_id: str, element_id: str) -> str:
+    return f"ai_error_{review_id}_{element_id}"
+
+
+def ai_restored_key(review_id: str, element_id: str) -> str:
+    return f"ai_restored_{review_id}_{element_id}"
 
 
 def initialize_review_state(
@@ -355,19 +420,19 @@ def initialize_review_state(
     st.session_state["page_meta"] = page_meta
     st.session_state["review_document"] = review_document
     st.session_state["document_title_key"] = review_document["document_title"]
+    st.session_state["document_outline"] = build_document_outline(review_document)
     for fragment in review_document["fragments"]:
-        # Keep the canonical edited fragment separate from the text-area widget.
-        # Streamlit removes a widget's state when the widget is temporarily hidden
-        # (for example, while the rendered HTML preview is displayed).
-        st.session_state[f"fragment_value_{review_id}_{fragment['element_id']}"] = fragment["html"]
-
-
-def fragment_value_key(review_id: str, element_id: str) -> str:
-    return f"fragment_value_{review_id}_{element_id}"
-
-
-def fragment_editor_key(review_id: str, element_id: str) -> str:
-    return f"fragment_editor_{review_id}_{element_id}"
+        element_id = fragment["element_id"]
+        st.session_state[fragment_value_key(review_id, element_id)] = fragment["html"]
+        st.session_state[ai_applied_key(review_id, element_id)] = False
+        st.session_state[ai_summary_key(review_id, element_id)] = []
+        st.session_state[ai_notes_key(review_id, element_id)] = []
+        st.session_state[ai_regions_key(review_id, element_id)] = []
+        st.session_state[ai_excluded_regions_key(review_id, element_id)] = []
+        st.session_state[ai_needs_review_key(review_id, element_id)] = False
+        st.session_state[ai_validation_key(review_id, element_id)] = []
+        st.session_state[ai_error_key(review_id, element_id)] = ""
+        st.session_state[ai_restored_key(review_id, element_id)] = False
 
 
 def current_edited_fragments() -> Dict[str, str]:
@@ -381,17 +446,145 @@ def current_edited_fragments() -> Dict[str, str]:
     }
 
 
-def build_reviewed_output() -> tuple[str, list[str]]:
-    return merge_reviewed_document(
-        st.session_state["review_document"],
-        current_edited_fragments(),
-        st.session_state.get("document_title_key", "Accessible HTML Alternative"),
-    )
+def page_meta_by_number() -> Dict[int, dict]:
+    return {meta["page_number"]: meta for meta in st.session_state.get("page_meta", [])}
+
+
+def run_ai_assisted_correction(fragment: dict, page_meta: dict) -> None:
+    review_id = st.session_state["review_id"]
+    review_document = st.session_state["review_document"]
+    element_id = fragment["element_id"]
+    value_key = fragment_value_key(review_id, element_id)
+    current_fragment = st.session_state.get(value_key, fragment["html"])
+    api_key = st.session_state.get("openai_api_key", "").strip()
+    st.session_state[ai_error_key(review_id, element_id)] = ""
+    st.session_state[ai_restored_key(review_id, element_id)] = False
+
+    if not api_key:
+        st.session_state[ai_error_key(review_id, element_id)] = (
+            "Enter an OpenAI API key in the left Settings panel before using AI-assisted Correction."
+        )
+        return
+
+    page_assets = embedded_assets_for_text(review_document, current_fragment)
+    allowed_tokens = [asset["token"] for asset in page_assets]
+
+    try:
+        with st.spinner(f"Running AI-assisted correction for PDF page {fragment['page_number']}..."):
+            raw_result = request_ai_page_correction(
+                api_key=api_key,
+                current_fragment_html=current_fragment,
+                page_image_bytes=page_meta["image_bytes"],
+                page_number=fragment["page_number"],
+                total_pages=len(st.session_state.get("page_meta", [])),
+                document_title=st.session_state.get("document_title_key", review_document.get("document_title", "")),
+                document_outline=st.session_state.get("document_outline", []),
+                allowed_tokens=allowed_tokens,
+                model=OPENAI_DEFAULT_MODEL,
+            )
+            normalized = normalize_ai_result(raw_result)
+            corrected_html, validation_warnings = validate_ai_corrected_fragment(
+                corrected_fragment_html=normalized["corrected_page_html"],
+                expected_page_id=element_id,
+                allowed_tokens=allowed_tokens,
+            )
+            corrected_html, image_presentation_warnings = enforce_protected_image_presentation(
+                corrected_html,
+                review_document.get("protected_image_presentation", {}),
+            )
+            validation_warnings.extend(image_presentation_warnings)
+            if not normalized["visible_text_regions"]:
+                validation_warnings.append(
+                    "The AI response did not include a visible-text-region inventory. Review the screenshot manually for omitted text."
+                )
+            for region in normalized["visible_text_regions"]:
+                status = region.get("status", "included").strip().lower()
+                if status not in {"included", "represented", "transcribed", "included in html", "included in alt text"}:
+                    validation_warnings.append(
+                        f"Visible region '{region.get('region', 'Unnamed region')}' has status '{region.get('status', '')}'. Review it manually."
+                    )
+    except AICorrectionError as exc:
+        st.session_state[ai_error_key(review_id, element_id)] = str(exc)
+        return
+    except Exception as exc:
+        st.session_state[ai_error_key(review_id, element_id)] = f"Unexpected AI correction error: {exc}"
+        return
+
+    st.session_state[value_key] = corrected_html
+    st.session_state[ai_applied_key(review_id, element_id)] = True
+    st.session_state[ai_summary_key(review_id, element_id)] = normalized["changes_summary"]
+    st.session_state[ai_notes_key(review_id, element_id)] = normalized["review_notes"]
+    st.session_state[ai_regions_key(review_id, element_id)] = normalized["visible_text_regions"]
+    st.session_state[ai_excluded_regions_key(review_id, element_id)] = normalized["intentionally_excluded_regions"]
+    st.session_state[ai_needs_review_key(review_id, element_id)] = normalized["needs_human_review"]
+    st.session_state[ai_validation_key(review_id, element_id)] = validation_warnings
+    st.session_state[ai_error_key(review_id, element_id)] = ""
+
+
+def restore_original_page(fragment: dict) -> None:
+    review_id = st.session_state["review_id"]
+    element_id = fragment["element_id"]
+    st.session_state[fragment_value_key(review_id, element_id)] = fragment["html"]
+    st.session_state[ai_restored_key(review_id, element_id)] = True
+    st.session_state[ai_error_key(review_id, element_id)] = ""
+
+
+def render_ai_status(fragment: dict) -> None:
+    review_id = st.session_state["review_id"]
+    element_id = fragment["element_id"]
+    error_message = st.session_state.get(ai_error_key(review_id, element_id), "")
+    was_restored = st.session_state.get(ai_restored_key(review_id, element_id), False)
+    ai_applied = st.session_state.get(ai_applied_key(review_id, element_id), False)
+    changes = st.session_state.get(ai_summary_key(review_id, element_id), [])
+    notes = st.session_state.get(ai_notes_key(review_id, element_id), [])
+    regions = st.session_state.get(ai_regions_key(review_id, element_id), [])
+    excluded_regions = st.session_state.get(ai_excluded_regions_key(review_id, element_id), [])
+    validation = st.session_state.get(ai_validation_key(review_id, element_id), [])
+    needs_review = st.session_state.get(ai_needs_review_key(review_id, element_id), False)
+
+    if error_message:
+        st.error(error_message)
+
+    if was_restored:
+        st.info("This page has been restored to the original AWS-generated HTML for this page.")
+
+    if ai_applied:
+        st.success("AI-assisted correction has been applied once for this page. The button is now disabled for this page.")
+        with st.expander("AI correction details", expanded=False):
+            if regions:
+                st.markdown("**Visible text region inventory**")
+                for region in regions:
+                    label = region.get("region", "Unnamed region")
+                    status = region.get("status", "included")
+                    notes_text = region.get("notes", "")
+                    detail = f" — {notes_text}" if notes_text else ""
+                    st.markdown(f"- **{label}**: {status}{detail}")
+            if excluded_regions:
+                st.markdown("**Intentionally excluded regions**")
+                for region in excluded_regions:
+                    label = region.get("region", "Unnamed region")
+                    reason = region.get("reason", "No reason provided")
+                    st.markdown(f"- **{label}**: {reason}")
+            if changes:
+                st.markdown("**AI change summary**")
+                for item in changes:
+                    st.markdown(f"- {item}")
+            if notes:
+                st.markdown("**AI review notes**")
+                for item in notes:
+                    st.markdown(f"- {item}")
+            if validation:
+                st.markdown("**Local validation notes**")
+                for item in validation:
+                    st.markdown(f"- {item}")
+            if needs_review:
+                st.warning("The AI indicated that this page still needs human review.")
 
 
 def render_review_workspace() -> None:
     review_document = st.session_state["review_document"]
     page_meta = st.session_state["page_meta"]
+    page_meta_lookup = page_meta_by_number()
     review_id = st.session_state["review_id"]
     uploaded_name = st.session_state["uploaded_name"]
 
@@ -407,7 +600,8 @@ def render_review_workspace() -> None:
         """
 <div class="review-intro">
 <strong>Review workflow:</strong> Open a PDF page, compare the original screenshot with the generated HTML source,
-make corrections, and switch to <strong>Preview HTML</strong> to see the rendered result. The original Lambda output
+make corrections, and switch to <strong>Preview HTML</strong> to see the rendered result. You may optionally use
+<strong>AI-assisted Correction</strong> once per page to improve OCR and HTML structure. The original Lambda output
 remains available as a fallback download. Your reviewed file is assembled in memory and downloads directly to your computer.
 </div>
         """,
@@ -420,16 +614,6 @@ remains available as a fallback download. Your reviewed file is assembled in mem
         key="document_title_key",
         help="This updates the HTML title element in the downloaded reviewed file.",
     )
-    embedded_assets = review_document.get("embedded_assets", {})
-    if embedded_assets:
-        st.info(
-            f"Compact embedded-image tokens are active. {len(embedded_assets)} Base64-encoded "
-            f"asset{'s are' if len(embedded_assets) != 1 else ' is'} hidden behind inline pills while you edit. "
-            "Preview and download restore the complete self-contained HTML automatically."
-        )
-        with st.expander("Embedded image token reference"):
-            for asset in embedded_assets.values():
-                st.code(f"{asset['token']}  →  {asset['label']}", language=None)
 
     for warning in review_document.get("warnings", []):
         st.warning(warning)
@@ -444,6 +628,28 @@ remains available as a fallback download. Your reviewed file is assembled in mem
         fragment = fragment_by_number.get(page_number)
         expander_label = fragment["label"] if fragment else f"PDF page {page_number} - HTML container not detected"
         with st.expander(expander_label, expanded=(page_number == 1)):
+            if fragment is not None:
+                button_col_fill, button_col_ai, button_col_restore = st.columns([3.7, 1.2, 1.1])
+                with button_col_ai:
+                    ai_disabled = st.session_state.get(ai_applied_key(review_id, fragment["element_id"]), False)
+                    if st.button(
+                        "AI-assisted Correction",
+                        key=f"ai_correct_{review_id}_{fragment['element_id']}",
+                        disabled=ai_disabled,
+                        use_container_width=True,
+                    ):
+                        run_ai_assisted_correction(fragment, page_meta_lookup[page_number])
+                        st.rerun()
+                with button_col_restore:
+                    if st.button(
+                        "Restore Original Page",
+                        key=f"restore_page_{review_id}_{fragment['element_id']}",
+                        use_container_width=True,
+                    ):
+                        restore_original_page(fragment)
+                        st.rerun()
+                render_ai_status(fragment)
+
             left, right = st.columns([1, 1], gap="large")
             with left:
                 zoomable_pdf_panel(
@@ -469,11 +675,8 @@ remains available as a fallback download. Your reviewed file is assembled in mem
                     )
                     if edited_fragment != current_fragment:
                         st.session_state[value_key] = edited_fragment
+                        st.session_state[ai_restored_key(review_id, fragment["element_id"])] = False
 
-            # Render captions in one shared row after both panels. Keeping the
-            # captions outside the independently sized component columns makes
-            # their baselines align even if the two component iframes report
-            # slightly different outer heights to Streamlit.
             caption_left, caption_right = st.columns([1, 1], gap="large")
             with caption_left:
                 st.markdown(
@@ -534,6 +737,7 @@ remains available as a fallback download. Your reviewed file is assembled in mem
                 [
                     f"Uploaded: {st.session_state.get('last_upload_key', '')}",
                     f"Generated: {st.session_state.get('last_output_key', '')}",
+                    f"OpenAI page correction model: {OPENAI_DEFAULT_MODEL}",
                     "Reviewed HTML: assembled in the active Streamlit session and downloaded directly",
                 ]
             )

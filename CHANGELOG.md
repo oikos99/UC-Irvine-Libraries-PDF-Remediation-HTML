@@ -1,5 +1,28 @@
 # Changelog
 
+## v16
+
+- Hide the OpenAI API key field and OpenAI explanatory text until the shared prototype access key has been entered successfully.
+- Protect backend-calculated BDA image sizing metadata by stable embedded-image token.
+- Reapply original image class, style, width, height, `data-bda-relative-width`, and `data-image-width-source` attributes immediately after AI-assisted correction.
+- Reapply protected BDA image presentation again during final reviewed-HTML export so later source edits cannot silently discard deterministic crop sizing.
+- Expand the AI prompt to prohibit guessed image resizing while still allowing semantic restructuring and improved alt text.
+
+## v15
+
+- Treat the rendered PDF page screenshot as the authoritative source for AI-assisted correction while retaining the current HTML as an editable draft.
+- Permit the AI correction pass to recover meaningful text visibly present in the scan even when OCR omitted it from the original HTML.
+- Require a visible-text-region inventory and intentionally excluded-region list in the AI response.
+- Display the region inventory inside the collapsed **AI correction details** expander.
+- Add deterministic local warnings for suspicious `<br>` overuse, questionable headings, heading-level skips, weak table markup, and missing or uncertain image alt text.
+- Apply the same semantic warnings during final reviewed-HTML export so manually edited and non-AI pages are checked too.
+
+## v14
+
+- Move AI change summaries, AI review notes, and local validation notes into a collapsed **AI correction details** expander.
+- Remove the empty summary-box artifact caused by trying to wrap Streamlit elements in a raw HTML div.
+- Right-align the **AI-assisted Correction** and **Restore Original Page** actions within each page accordion.
+
 ## v11
 
 - Remove the top padding from the main converter `<h1>` heading while retaining the safer page-level top spacing that prevents logo clipping.
@@ -47,3 +70,8 @@
 - Added Zoom out, Fit width, and Zoom in controls plus keyboard zoom shortcuts within the focused image panel.
 - Matched the original-page and HTML-review panel heights so their lower edges align.
 - Centered both panel captions.
+
+## v13
+- Fixed a false-positive AI validation error when a model wraps a corrected page fragment in harmless `<!doctype html>`, `<html>`, or `<body>` scaffolding.
+- The AI correction importer now extracts the expected page container and discards outer wrappers before applying the correction.
+- Unsafe tags, external assets, raw Base64 data URIs, and broken embedded-image token sets remain blocked.
