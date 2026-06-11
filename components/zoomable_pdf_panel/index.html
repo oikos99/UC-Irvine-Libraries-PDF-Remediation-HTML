@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root {
+      --uci-blue: #00508f;
+      --uci-light-blue: #78b9e6;
+      --uci-border: #c7d7e3;
+      --panel-bg: #f7fafc;
+      --text: #1f2933;
+      --muted: #52606d;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Arial, sans-serif; color: var(--text); background: transparent; }
+    .toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 0; margin-bottom: .45rem; }
+    .toolbar button {
+      border: 1px solid var(--uci-blue);
+      background: white;
+      color: var(--uci-blue);
+      padding: .42rem .66rem;
+      font: inherit;
+      cursor: pointer;
+    }
+    .toolbar button + button { border-left: 0; }
+    .toolbar button:first-child { border-radius: 4px 0 0 4px; }
+    .toolbar button:last-of-type { border-radius: 0 4px 4px 0; }
+    .toolbar button:hover { background: #eef6fb; }
+    .toolbar button:focus-visible { outline: 3px solid var(--uci-light-blue); outline-offset: 2px; position: relative; z-index: 1; }
+    .zoom-label {
+      min-width: 4.2rem;
+      margin-left: .65rem;
+      color: var(--muted);
+      font-size: .88rem;
+      text-align: right;
+      white-space: nowrap;
+    }
+    .hint { margin: 0 0 .45rem 0; color: var(--muted); font-size: .82rem; }
+    .viewer {
+      height: 550px;
+      overflow: auto;
+      border: 1px solid var(--uci-border);
+      border-radius: 4px;
+      background: var(--panel-bg);
+      overscroll-behavior: contain;
+    }
+    .canvas { min-width: 100%; min-height: 100%; padding: .6rem; }
+    .page-image {
+      display: block;
+      width: 100%;
+      max-width: none;
+      height: auto;
+      margin: 0 auto;
+      box-shadow: 0 1px 4px rgba(16, 42, 67, .2);
+      background: white;
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar" role="group" aria-label="Original PDF page zoom controls">
+    <button id="zoomOut" type="button" aria-label="Zoom out original PDF page">− Zoom out</button>
+    <button id="fitWidth" type="button" aria-label="Fit original PDF page to panel width">Fit width</button>
+    <button id="zoomIn" type="button" aria-label="Zoom in original PDF page">+ Zoom in</button>
+    <span id="zoomLabel" class="zoom-label" aria-live="polite">100%</span>
+  </div>
+  <p class="hint">Zoom in to inspect small text. Scroll inside the image panel to move around the page.</p>
+  <div id="viewer" class="viewer" tabindex="0" aria-label="Zoomable original PDF page image">
+    <div class="canvas">
+      <img id="pageImage" class="page-image" alt="">
+    </div>
+  </div>
+
+  <script>
+    const COMPONENT_READY = "streamlit:componentReady";
+    const SET_FRAME_HEIGHT = "streamlit:setFrameHeight";
+    const RENDER = "streamlit:render";
+
+    const viewer = document.getElementById("viewer");
+    const pageImage = document.getElementById("pageImage");
+    const zoomLabel = document.getElementById("zoomLabel");
+    const zoomOutButton = document.getElementById("zoomOut");
+    const fitWidthButton = document.getElementById("fitWidth");
+    const zoomInButton = document.getElementById("zoomIn");
+
+    const MIN_ZOOM = 0.5;
+    const MAX_ZOOM = 4;
+    const ZOOM_STEP = 0.25;
+    let zoom = 1;
+
+    function sendMessage(type, data = {}) {
+      window.parent.postMessage({ isStreamlitMessage: true, type, ...data }, "*");
+    }
+
+    function setFrameHeight(height) {
+      sendMessage(SET_FRAME_HEIGHT, { height });
+    }
+
+    function reportFrameHeight() {
+      window.requestAnimationFrame(() => {
+        const measured = Math.ceil(document.documentElement.scrollHeight || document.body.scrollHeight || 0);
+        setFrameHeight(Math.max(360, measured));
+      });
+    }
+
+    function clamp(value, minimum, maximum) {
+      return Math.min(maximum, Math.max(minimum, value));
+    }
+
+    function applyZoom(nextZoom, preserveCenter = true) {
+      const oldZoom = zoom;
+      const oldScrollLeft = viewer.scrollLeft;
+      const oldScrollTop = viewer.scrollTop;
+      const centerX = oldScrollLeft + viewer.clientWidth / 2;
+      const centerY = oldScrollTop + viewer.clientHeight / 2;
+
+      zoom = clamp(nextZoom, MIN_ZOOM, MAX_ZOOM);
+      pageImage.style.width = `${Math.round(zoom * 100)}%`;
+      zoomLabel.textContent = `${Math.round(zoom * 100)}%`;
+      zoomOutButton.disabled = zoom <= MIN_ZOOM;
+      zoomInButton.disabled = zoom >= MAX_ZOOM;
+
+      if (preserveCenter && oldZoom > 0) {
+        const ratio = zoom / oldZoom;
+        window.requestAnimationFrame(() => {
+          viewer.scrollLeft = Math.max(0, centerX * ratio - viewer.clientWidth / 2);
+          viewer.scrollTop = Math.max(0, centerY * ratio - viewer.clientHeight / 2);
+        });
+      } else {
+        viewer.scrollLeft = 0;
+        viewer.scrollTop = 0;
+      }
+    }
+
+    zoomOutButton.addEventListener("click", () => applyZoom(zoom - ZOOM_STEP));
+    zoomInButton.addEventListener("click", () => applyZoom(zoom + ZOOM_STEP));
+    fitWidthButton.addEventListener("click", () => applyZoom(1, false));
+
+    viewer.addEventListener("keydown", event => {
+      if ((event.ctrlKey || event.metaKey) && ["+", "=", "-", "0"].includes(event.key)) {
+        event.preventDefault();
+        if (event.key === "-" ) applyZoom(zoom - ZOOM_STEP);
+        else if (event.key === "0") applyZoom(1, false);
+        else applyZoom(zoom + ZOOM_STEP);
+      }
+    });
+
+    window.addEventListener("message", event => {
+      if (!event.data || event.data.type !== RENDER) return;
+      const args = event.data.args || {};
+      const imageDataUrl = typeof args.image_data_url === "string" ? args.image_data_url : "";
+      const pageNumber = Number(args.page_number || 1);
+      const height = Number(args.height || 650);
+      const panelHeight = Math.max(320, height - 100);
+      viewer.style.height = `${panelHeight}px`;
+      pageImage.src = imageDataUrl;
+      pageImage.alt = `Rendered original PDF page ${pageNumber}`;
+      applyZoom(1, false);
+      reportFrameHeight();
+    });
+
+    sendMessage(COMPONENT_READY, { apiVersion: 1 });
+    reportFrameHeight();
+  </script>
+</body>
+</html>

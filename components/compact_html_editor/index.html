@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root {
+      --uci-blue: #00508f;
+      --uci-light-blue: #78b9e6;
+      --uci-pale-blue: #eef6fb;
+      --uci-border: #c7d7e3;
+      --editor-bg: #ffffff;
+      --editor-text: #1f2933;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Arial, sans-serif; color: var(--editor-text); background: transparent; }
+    .toolbar { display: flex; gap: 0; margin-bottom: .45rem; }
+    .toolbar button {
+      border: 1px solid var(--uci-blue);
+      background: white;
+      color: var(--uci-blue);
+      padding: .42rem .72rem;
+      font: inherit;
+      cursor: pointer;
+    }
+    .toolbar button:first-child { border-radius: 4px 0 0 4px; }
+    .toolbar button:last-child { border-left: 0; border-radius: 0 4px 4px 0; }
+    .toolbar button.active { background: var(--uci-blue); color: white; }
+    .toolbar button:focus-visible { outline: 3px solid var(--uci-light-blue); outline-offset: 2px; }
+    .hint { margin: 0 0 .45rem 0; color: #52606d; font-size: .82rem; }
+    .editor {
+      width: 100%;
+      height: 585px;
+      overflow: auto;
+      resize: vertical;
+      border: 1px solid var(--uci-border);
+      border-radius: 4px;
+      background: var(--editor-bg);
+      padding: .75rem;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      tab-size: 2;
+      font: 13px/1.48 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    }
+    .editor:focus { outline: 3px solid var(--uci-light-blue); outline-offset: 1px; border-color: var(--uci-blue); }
+    .asset-token {
+      display: inline-flex;
+      align-items: center;
+      max-width: 100%;
+      border: 1px solid #78b9e6;
+      border-radius: 999px;
+      background: #eef6fb;
+      color: #00457c;
+      padding: 0 .42rem;
+      margin: 0 .1rem;
+      font-family: Arial, sans-serif;
+      font-size: .78rem;
+      line-height: 1.55;
+      vertical-align: baseline;
+      white-space: nowrap;
+      user-select: all;
+      cursor: default;
+    }
+    .asset-token::before { content: ""; }
+    .preview-wrap { height: 610px; border: 1px solid var(--uci-border); border-radius: 4px; overflow: hidden; }
+    .preview { width: 100%; height: 100%; border: 0; background: white; }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <div class="toolbar" role="group" aria-label="HTML view mode">
+    <button id="previewButton" type="button" class="active" aria-pressed="true">Preview HTML</button>
+    <button id="editButton" type="button" aria-pressed="false">Edit HTML source</button>
+  </div>
+  <p class="hint" id="hint">Embedded Base64 images appear as compact protected tokens. Edit the surrounding HTML normally.</p>
+  <div id="editor" class="editor hidden" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Editable HTML source" spellcheck="false"></div>
+  <div id="previewWrap" class="preview-wrap">
+    <iframe id="preview" class="preview" title="Rendered HTML preview" sandbox=""></iframe>
+  </div>
+
+  <script>
+    const COMPONENT_READY = "streamlit:componentReady";
+    const SET_COMPONENT_VALUE = "streamlit:setComponentValue";
+    const SET_FRAME_HEIGHT = "streamlit:setFrameHeight";
+    const RENDER = "streamlit:render";
+
+    const editor = document.getElementById("editor");
+    const previewWrap = document.getElementById("previewWrap");
+    const previewFrame = document.getElementById("preview");
+    const editButton = document.getElementById("editButton");
+    const previewButton = document.getElementById("previewButton");
+
+    let currentValue = "";
+    let lastSentValue = null;
+    let tokenMap = new Map();
+    let previewStyles = "";
+    let mode = "preview";
+    let debounceTimer = null;
+    let previewObjectUrl = null;
+    let hasReceivedInitialRender = false;
+
+    function sendMessage(type, data = {}) {
+      window.parent.postMessage({ isStreamlitMessage: true, type, ...data }, "*");
+    }
+
+    function setFrameHeight(height) {
+      sendMessage(SET_FRAME_HEIGHT, { height });
+    }
+
+    function sendValue(value) {
+      currentValue = value;
+      lastSentValue = value;
+      sendMessage(SET_COMPONENT_VALUE, { value, dataType: "json" });
+    }
+
+    function escapeHtml(value) {
+      return value
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    function tokenRegex() {
+      return /\{\{(?:EMBEDDED_IMAGE|EMBEDDED_ASSET)_\d{4}\}\}/g;
+    }
+
+    function appendTextWithTokens(parent, value) {
+      let cursor = 0;
+      for (const match of value.matchAll(tokenRegex())) {
+        if (match.index > cursor) parent.appendChild(document.createTextNode(value.slice(cursor, match.index)));
+        const token = match[0];
+        const meta = tokenMap.get(token) || { label: token };
+        const chip = document.createElement("span");
+        chip.className = "asset-token";
+        chip.contentEditable = "false";
+        chip.dataset.token = token;
+        chip.setAttribute("aria-label", `${meta.label}. Protected embedded asset token.`);
+        chip.title = `${meta.label}\n${token}`;
+        chip.textContent = meta.label;
+        parent.appendChild(chip);
+        cursor = match.index + token.length;
+      }
+      if (cursor < value.length) parent.appendChild(document.createTextNode(value.slice(cursor)));
+    }
+
+    function renderEditorValue(value) {
+      editor.replaceChildren();
+      appendTextWithTokens(editor, value || "");
+      currentValue = value || "";
+    }
+
+    function serializeNode(node) {
+      if (node.nodeType === Node.TEXT_NODE) return node.nodeValue || "";
+      if (node.nodeType !== Node.ELEMENT_NODE) return "";
+      const element = node;
+      if (element.classList.contains("asset-token")) return element.dataset.token || "";
+      if (element.tagName === "BR") return "\n";
+      let text = "";
+      for (const child of element.childNodes) text += serializeNode(child);
+      if (["DIV", "P"].includes(element.tagName) && !text.endsWith("\n")) text += "\n";
+      return text;
+    }
+
+    function serializeEditor() {
+      let value = "";
+      for (const child of editor.childNodes) value += serializeNode(child);
+      return value.replace(/\n$/, "");
+    }
+
+    function queueSend() {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => sendValue(serializeEditor()), 250);
+    }
+
+    function sendImmediately() {
+      clearTimeout(debounceTimer);
+      sendValue(serializeEditor());
+    }
+
+    function insertPlainText(text) {
+      const selection = window.getSelection();
+      if (!selection || !selection.rangeCount) return;
+      const range = selection.getRangeAt(0);
+      range.deleteContents();
+      const node = document.createTextNode(text);
+      range.insertNode(node);
+      range.setStartAfter(node);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      queueSend();
+    }
+
+    function restoreTokens(value) {
+      let restored = value;
+      for (const [token, meta] of tokenMap.entries()) restored = restored.split(token).join(meta.data_uri || "");
+      return restored;
+    }
+
+    function sanitizeFragment(value) {
+      const doc = new DOMParser().parseFromString(value, "text/html");
+      doc.querySelectorAll("script, iframe, object, embed, base").forEach(node => node.remove());
+      doc.querySelectorAll("*").forEach(node => {
+        for (const attribute of [...node.attributes]) {
+          const name = attribute.name.toLowerCase();
+          const attrValue = attribute.value.trim().toLowerCase();
+          if (name.startsWith("on")) node.removeAttribute(attribute.name);
+          if (["href", "src", "action"].includes(name) && attrValue.startsWith("javascript:")) {
+            node.removeAttribute(attribute.name);
+          }
+        }
+      });
+      return doc.body.innerHTML;
+    }
+
+    function buildPreviewDocument(value) {
+      const safeFragment = sanitizeFragment(restoreTokens(value));
+      return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+${previewStyles}
+<style>
+body { padding: 1rem; font-family: Arial, sans-serif; line-height: 1.45; }
+img { max-width: 100%; height: auto; }
+table { max-width: 100%; border-collapse: collapse; }
+</style>
+</head>
+<body>${safeFragment}</body>
+</html>`;
+    }
+
+    function refreshPreview() {
+      // Use a fresh Blob URL for every refresh. Reassigning iframe.srcdoc can
+      // intermittently leave an already-used sandboxed iframe visually blank
+      // in some browsers after toggling back and forth.
+      const html = buildPreviewDocument(currentValue);
+      const nextUrl = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" }));
+      const previousUrl = previewObjectUrl;
+      previewObjectUrl = nextUrl;
+      previewFrame.removeAttribute("srcdoc");
+      previewFrame.src = nextUrl;
+      if (previousUrl) window.setTimeout(() => URL.revokeObjectURL(previousUrl), 1000);
+    }
+
+    function reportFrameHeight() {
+      window.requestAnimationFrame(() => {
+        const measured = Math.ceil(document.documentElement.scrollHeight || document.body.scrollHeight || 0);
+        setFrameHeight(Math.max(360, measured));
+      });
+    }
+
+    function showEdit() {
+      mode = "edit";
+      previewWrap.classList.add("hidden");
+      editor.classList.remove("hidden");
+      editButton.classList.add("active");
+      editButton.setAttribute("aria-pressed", "true");
+      previewButton.classList.remove("active");
+      previewButton.setAttribute("aria-pressed", "false");
+      editor.focus();
+      reportFrameHeight();
+    }
+
+    function showPreview() {
+      // Render from the editor DOM immediately. Do not force a Streamlit rerun
+      // during the view switch; queued edit synchronization remains separate.
+      currentValue = serializeEditor();
+      mode = "preview";
+      refreshPreview();
+      editor.classList.add("hidden");
+      previewWrap.classList.remove("hidden");
+      previewButton.classList.add("active");
+      previewButton.setAttribute("aria-pressed", "true");
+      editButton.classList.remove("active");
+      editButton.setAttribute("aria-pressed", "false");
+      reportFrameHeight();
+    }
+
+    editor.addEventListener("input", queueSend);
+    editor.addEventListener("paste", event => {
+      event.preventDefault();
+      insertPlainText(event.clipboardData.getData("text/plain"));
+    });
+    editor.addEventListener("keydown", event => {
+      if (event.key === "Tab") {
+        event.preventDefault();
+        insertPlainText("  ");
+      }
+    });
+    editButton.addEventListener("click", showEdit);
+    previewButton.addEventListener("click", showPreview);
+
+    window.addEventListener("message", event => {
+      if (!event.data || event.data.type !== RENDER) return;
+      const args = event.data.args || {};
+      const incomingValue = typeof args.value === "string" ? args.value : "";
+      tokenMap = new Map((args.tokens || []).map(meta => [meta.token, meta]));
+      previewStyles = typeof args.preview_styles === "string" ? args.preview_styles : "";
+      const height = Number(args.height || 650);
+      const panelHeight = Math.max(320, height - 100);
+      editor.style.height = `${panelHeight}px`;
+      previewWrap.style.height = `${panelHeight}px`;
+
+      const serialized = serializeEditor();
+      const editorIsEmpty = editor.childNodes.length === 0;
+      const parentAcknowledgedLocalValue = lastSentValue !== null && incomingValue === lastSentValue;
+      const serverHasNewValue = incomingValue !== serialized && incomingValue !== currentValue;
+      const transientBlankRerender =
+        hasReceivedInitialRender &&
+        incomingValue === "" &&
+        serialized !== "" &&
+        currentValue !== "" &&
+        !parentAcknowledgedLocalValue;
+
+      if (!hasReceivedInitialRender || editorIsEmpty) {
+        renderEditorValue(incomingValue);
+        hasReceivedInitialRender = true;
+      } else if (serverHasNewValue && !transientBlankRerender) {
+        // Accept an intentional server-side replacement, including an empty
+        // value acknowledged after the reviewer deliberately deletes content.
+        renderEditorValue(incomingValue);
+      } else {
+        // Preserve the editor DOM across Streamlit reruns. In particular, do
+        // not let a transient missing/empty component argument erase a page.
+        currentValue = serialized;
+      }
+
+      if (mode === "preview") refreshPreview();
+      reportFrameHeight();
+    });
+
+    sendMessage(COMPONENT_READY, { apiVersion: 1 });
+    reportFrameHeight();
+  </script>
+</body>
+</html>
