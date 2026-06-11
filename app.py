@@ -141,8 +141,45 @@ def apply_custom_theme() -> None:
   padding: 0.8rem 1rem;
   margin: 0.5rem 0 1rem 0;
 }
-[data-testid="stSidebar"] { border-right: 1px solid var(--uci-border); }
+/* Hardcoded UC Irvine theme fallback. This keeps the intended colors even if
+   .streamlit/config.toml is missing or Streamlit Cloud does not load it. */
+html, body, [data-testid="stAppViewContainer"], [data-testid="stSidebar"] {
+  --primary-color: #00508f !important;
+  --background-color: #ffffff !important;
+  --secondary-background-color: #eef6fb !important;
+  --text-color: #1f2933 !important;
+}
+[data-testid="stSidebar"] {
+  border-right: 1px solid var(--uci-border);
+  background-color: var(--uci-pale-blue) !important;
+}
 [data-testid="stExpander"] { border-color: var(--uci-border); }
+
+/* Streamlit slider fallback. BaseWeb sliders do not consistently inherit the
+   app theme when config.toml is omitted during deployment, so set the visible
+   thumb, active bar, and value label directly. */
+[data-testid="stSlider"] [role="slider"] {
+  background-color: var(--uci-blue) !important;
+  border-color: var(--uci-blue) !important;
+}
+[data-testid="stSlider"] [data-testid="stThumbValue"],
+[data-testid="stSlider"] [data-testid="stSliderThumbValue"],
+[data-testid="stSlider"] [class*="ThumbValue"] {
+  color: var(--uci-blue) !important;
+}
+[data-testid="stSlider"] [data-baseweb="slider"] > div > div:first-child,
+[data-testid="stSlider"] [data-baseweb="slider"] > div > div > div:first-child {
+  background-color: var(--uci-blue) !important;
+}
+input[type="range"] { accent-color: var(--uci-blue) !important; }
+
+/* Keep common focused controls on brand color as well. */
+[data-testid="stTextInput"] input:focus,
+[data-testid="stFileUploader"] section:focus-within,
+textarea:focus {
+  border-color: var(--uci-blue) !important;
+  box-shadow: 0 0 0 1px var(--uci-blue) !important;
+}
 .panel-caption {
   margin: 0.38rem 0 0 0;
   color: #6b7280;

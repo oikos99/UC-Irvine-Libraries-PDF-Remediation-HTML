@@ -75,3 +75,13 @@
 - Fixed a false-positive AI validation error when a model wraps a corrected page fragment in harmless `<!doctype html>`, `<html>`, or `<body>` scaffolding.
 - The AI correction importer now extracts the expected page container and discards outer wrappers before applying the correction.
 - Unsafe tags, external assets, raw Base64 data URIs, and broken embedded-image token sets remain blocked.
+
+## v17
+- Added safe fallbacks when custom Streamlit component folders are missing from a deployed repository.
+- Prevented import-time crashes from `components.declare_component(...)` when nested component directories were omitted during deployment.
+- Retained the full `components/compact_html_editor/` and `components/zoomable_pdf_panel/` folders in the deployment package.
+
+## v18
+- Added an app-level CSS fallback that hardcodes UC Irvine colors even when `.streamlit/config.toml` is omitted or not loaded by Streamlit Cloud.
+- Added direct slider styling for the thumb, active bar, and value label.
+- Added branded focus styling for common form controls.
