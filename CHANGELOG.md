@@ -1,3 +1,8 @@
+## v34
+
+- Rename the interface to **UC Irvine Libraries PDF-to-HTML Accessibility Converter (Ver. 3)**.
+- Restyle **Save Process File for Later Review** with a softer `#d7e3ec` default background and `rgb(0, 80, 143)` text while retaining the accessible dark-blue hover and keyboard-focus state.
+
 ## v25
 
 - Hide the **Document limits** sidebar section after a saved `.ucipdfreview` workspace is loaded, since no new PDF upload is needed during a resumed review.
@@ -154,8 +159,3 @@
 - Kept the redundant helper sentence removed.
 - Retained **Unsaved page edits** while local pending changes exist.
 - Versioned the compact editor component registration so deployed apps load the revised UI.
-
-## v33
-- Recolored focused Streamlit text-input borders from the default red accent to UC Irvine blue (`rgb(0, 80, 143)`).
-- Targeted the stable BaseWeb input wrapper with `:focus-within`, because Streamlit applies the visible border to the wrapper rather than directly to the `<input>` element.
-- Added a runtime focus synchronizer so generated Streamlit classes such as `.st-dq`, `.st-dr`, `.st-ds`, and `.st-dt` cannot restore red borders after rerenders.

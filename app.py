@@ -46,7 +46,7 @@ from process_file import (
 from zoomable_pdf_panel import zoomable_pdf_panel
 
 
-APP_TITLE = "UC Irvine Libraries PDF-to-HTML Accessibility Converter (Ver. 2)"
+APP_TITLE = "UC Irvine Libraries PDF-to-HTML Accessibility Converter (Ver. 3)"
 DEFAULT_REGION = "us-west-2"
 DEFAULT_BUCKET = "pdf2html-bucket-947047971739-us-west-2"
 DEFAULT_MAX_FILE_MB = 100
@@ -137,7 +137,7 @@ def apply_custom_theme() -> None:
   margin: 0;
   padding-top: 0 !important;
 }
-#uc-irvine-libraries-pdf-to-html-accessibility-converter-ver-2 {
+#uc-irvine-libraries-pdf-to-html-accessibility-converter-ver-3 {
   padding-top: 0 !important;
 }
 .uci-header p { margin: 0.35rem 0 0 0; max-width: 980px; }
@@ -205,9 +205,9 @@ textarea:focus {
    HTML-download action. Both its default and hover states retain readable text
    contrast while remaining visually distinct. */
 .st-key-save_process_file_button [data-testid="stDownloadButton"] button {
-  background-color: var(--uci-light-blue) !important;
-  border-color: var(--uci-light-blue) !important;
-  color: #102a43 !important;
+  background-color: #d7e3ec !important;
+  border-color: #d7e3ec !important;
+  color: rgb(0, 80, 143) !important;
   font-weight: 600;
 }
 .st-key-save_process_file_button [data-testid="stDownloadButton"] button:hover,
@@ -526,7 +526,7 @@ def render_page_header() -> None:
 <div class="uci-header">
   {image}
   <div>
-    <h1>UC Irvine Libraries PDF-to-HTML Accessibility Converter (Ver. 2)</h1>
+    <h1>UC Irvine Libraries PDF-to-HTML Accessibility Converter (Ver. 3)</h1>
     <p>
       Create a single-file HTML accessibility alternative from a PDF document, compare each original PDF page
       with its generated HTML, make corrections, preview the result, and download the reviewed HTML file.
