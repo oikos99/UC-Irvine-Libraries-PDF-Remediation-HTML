@@ -142,10 +142,20 @@
 - Added a small synchronization status next to the editor mode controls.
 - Versioned the compact editor component registration to force browsers and Streamlit Cloud to load the revised iframe.
 
-## v29
-- Added an automatic buffered-editor synchronization gate for every action that depends on the current reviewed HTML.
-- Pending page edits now synchronize before AI-assisted Correction, the complete-document preview, export-warning review, Save Process File for Later Review, and Download Reviewed HTML File.
-- State-dependent actions are replayed automatically after synchronization, so reviewers no longer need to click outside the editor or switch to Preview HTML first.
-- Kept Restore Original Page unsynchronized intentionally because it discards the current working fragment by design.
-- Kept Download Original AWS-Generated HTML independent of current edits because it downloads the untouched Lambda baseline.
-- Versioned the compact HTML editor component registration to load the synchronized buffered-editor build.
+## v31
+- Removed the always-visible “Page edits synchronized” message from the compact HTML editor.
+- Removed the redundant helper sentence about synchronizing when leaving the editor or selecting Preview HTML.
+- Retained the “Unsaved page edits” warning only while the editor has local pending changes.
+- Versioned the compact editor component registration so deployed apps load the revised UI.
+
+
+## v32
+- Restored the clean-state **Page edits synchronized** status in the compact HTML editor.
+- Kept the redundant helper sentence removed.
+- Retained **Unsaved page edits** while local pending changes exist.
+- Versioned the compact editor component registration so deployed apps load the revised UI.
+
+## v33
+- Recolored focused Streamlit text-input borders from the default red accent to UC Irvine blue (`rgb(0, 80, 143)`).
+- Targeted the stable BaseWeb input wrapper with `:focus-within`, because Streamlit applies the visible border to the wrapper rather than directly to the `<input>` element.
+- Added a runtime focus synchronizer so generated Streamlit classes such as `.st-dq`, `.st-dr`, `.st-ds`, and `.st-dt` cannot restore red borders after rerenders.

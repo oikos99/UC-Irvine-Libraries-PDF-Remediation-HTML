@@ -176,12 +176,19 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stSidebar"] {
 }
 input[type="range"] { accent-color: var(--uci-blue) !important; }
 
-/* Keep common focused controls on brand color as well. */
-[data-testid="stTextInput"] input:focus,
+/* Keep common focused controls on brand color as well. Streamlit/BaseWeb
+   applies the visible text-input border to a wrapper div rather than directly
+   to the <input>, so target the stable BaseWeb wrapper with :focus-within. */
+[data-testid="stTextInput"] [data-baseweb="input"]:focus-within,
+[data-testid="stTextInput"]:focus-within [data-baseweb="input"],
 [data-testid="stFileUploader"] section:focus-within,
 textarea:focus {
-  border-color: var(--uci-blue) !important;
-  box-shadow: 0 0 0 1px var(--uci-blue) !important;
+  border-top-color: rgb(0, 80, 143) !important;
+  border-right-color: rgb(0, 80, 143) !important;
+  border-bottom-color: rgb(0, 80, 143) !important;
+  border-left-color: rgb(0, 80, 143) !important;
+  border-color: rgb(0, 80, 143) !important;
+  box-shadow: 0 0 0 1px rgb(0, 80, 143) !important;
 }
 .panel-caption {
   margin: 0.38rem 0 0 0;
@@ -278,6 +285,36 @@ def inject_runtime_brand_styles() -> None:
     });
   }
 
+  function clearInactiveBrandedInputBorders() {
+    doc.querySelectorAll('[data-uci-input-focus="true"]').forEach((candidate) => {
+      if (candidate.contains(doc.activeElement)) return;
+      candidate.style.removeProperty('border-top-color');
+      candidate.style.removeProperty('border-right-color');
+      candidate.style.removeProperty('border-bottom-color');
+      candidate.style.removeProperty('border-left-color');
+      candidate.style.removeProperty('border-color');
+      candidate.style.removeProperty('box-shadow');
+      delete candidate.dataset.uciInputFocus;
+    });
+  }
+
+  function paintFocusedTextInputs() {
+    clearInactiveBrandedInputBorders();
+    doc.querySelectorAll('[data-testid="stTextInput"] input:focus').forEach((input) => {
+      const root = input.closest('[data-testid="stTextInput"]');
+      if (!root) return;
+      const wrapper = input.closest('[data-baseweb="input"]') || root.querySelector('[data-baseweb="input"]');
+      if (!wrapper || wrapper.dataset.uciInputFocus === 'true') return;
+      wrapper.style.setProperty('border-top-color', BLUE, 'important');
+      wrapper.style.setProperty('border-right-color', BLUE, 'important');
+      wrapper.style.setProperty('border-bottom-color', BLUE, 'important');
+      wrapper.style.setProperty('border-left-color', BLUE, 'important');
+      wrapper.style.setProperty('border-color', BLUE, 'important');
+      wrapper.style.setProperty('box-shadow', `0 0 0 1px ${BLUE}`, 'important');
+      wrapper.dataset.uciInputFocus = 'true';
+    });
+  }
+
   let scheduled = false;
   function paintAllSliders() {
     if (scheduled) return;
@@ -288,6 +325,16 @@ def inject_runtime_brand_styles() -> None:
     });
   }
 
+  let inputScheduled = false;
+  function scheduleFocusedInputPaint() {
+    if (inputScheduled) return;
+    inputScheduled = true;
+    parentWindow.requestAnimationFrame(() => {
+      inputScheduled = false;
+      paintFocusedTextInputs();
+    });
+  }
+
   if (parentWindow.__uciBrandSliderObserver) {
     parentWindow.__uciBrandSliderObserver.disconnect();
   }
@@ -295,8 +342,15 @@ def inject_runtime_brand_styles() -> None:
     doc.removeEventListener('input', parentWindow.__uciBrandSliderHandler, true);
     doc.removeEventListener('change', parentWindow.__uciBrandSliderHandler, true);
   }
+  if (parentWindow.__uciBrandInputFocusHandler) {
+    doc.removeEventListener('focusin', parentWindow.__uciBrandInputFocusHandler, true);
+    doc.removeEventListener('focusout', parentWindow.__uciBrandInputFocusHandler, true);
+  }
 
-  const observer = new parentWindow.MutationObserver(paintAllSliders);
+  const observer = new parentWindow.MutationObserver(() => {
+    paintAllSliders();
+    scheduleFocusedInputPaint();
+  });
   observer.observe(doc.documentElement, {
     childList: true,
     subtree: true,
@@ -309,9 +363,14 @@ def inject_runtime_brand_styles() -> None:
   doc.addEventListener('input', paintAllSliders, true);
   doc.addEventListener('change', paintAllSliders, true);
 
+  parentWindow.__uciBrandInputFocusHandler = scheduleFocusedInputPaint;
+  doc.addEventListener('focusin', scheduleFocusedInputPaint, true);
+  doc.addEventListener('focusout', scheduleFocusedInputPaint, true);
+
   paintAllSliders();
-  parentWindow.setTimeout(paintAllSliders, 100);
-  parentWindow.setTimeout(paintAllSliders, 500);
+  scheduleFocusedInputPaint();
+  parentWindow.setTimeout(() => { paintAllSliders(); scheduleFocusedInputPaint(); }, 100);
+  parentWindow.setTimeout(() => { paintAllSliders(); scheduleFocusedInputPaint(); }, 500);
 })();
 </script>
         """,

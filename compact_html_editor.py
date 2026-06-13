@@ -10,7 +10,7 @@ import streamlit.components.v1 as components
 _COMPONENT_PATH = Path(__file__).parent / "components" / "compact_html_editor"
 _COMPONENT_AVAILABLE = _COMPONENT_PATH.is_dir() and (_COMPONENT_PATH / "index.html").is_file()
 _component = (
-    components.declare_component("compact_html_editor_buffered_v3", path=str(_COMPONENT_PATH))
+    components.declare_component("compact_html_editor_buffered_v5", path=str(_COMPONENT_PATH))
     if _COMPONENT_AVAILABLE
     else None
 )

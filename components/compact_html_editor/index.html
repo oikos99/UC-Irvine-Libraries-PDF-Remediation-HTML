@@ -73,9 +73,9 @@
   <div class="toolbar" role="group" aria-label="HTML view mode">
     <button id="previewButton" type="button" class="active" aria-pressed="true">Preview HTML</button>
     <button id="editButton" type="button" aria-pressed="false">Edit HTML source</button>
-    <span id="syncStatus" class="sync-status" role="status" aria-live="polite">Page edits synchronized</span>
+    <span id="syncStatus" class="sync-status hidden" role="status" aria-live="polite"></span>
   </div>
-  <p class="hint" id="hint">Embedded Base64 images appear as compact protected tokens. Edit the surrounding HTML normally. Changes synchronize when you leave the editor or select Preview HTML.</p>
+  <p class="hint" id="hint">Embedded Base64 images appear as compact protected tokens. Edit the surrounding HTML normally.</p>
   <div id="editor" class="editor hidden" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Editable HTML source" spellcheck="false"></div>
   <div id="previewWrap" class="preview-wrap">
     <iframe id="preview" class="preview" title="Rendered HTML preview" sandbox=""></iframe>
@@ -160,6 +160,7 @@
     function setDirty(isDirty) {
       dirty = Boolean(isDirty);
       syncStatus.textContent = dirty ? "Unsaved page edits" : "Page edits synchronized";
+      syncStatus.classList.remove("hidden");
       syncStatus.classList.toggle("dirty", dirty);
       updateParentRegistry();
     }
