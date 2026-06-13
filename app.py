@@ -37,6 +37,12 @@ from html_document import (
 )
 from compact_html_editor import compact_html_editor
 from render_pages import render_pdf_pages
+from process_file import (
+    PROCESS_FILE_EXTENSION,
+    ProcessFileError,
+    build_process_file_bytes,
+    load_process_file_bytes,
+)
 from zoomable_pdf_panel import zoomable_pdf_panel
 
 
@@ -183,6 +189,26 @@ textarea:focus {
   font-size: 0.875rem;
   text-align: center;
 }
+.review-section-divider {
+  border: 0;
+  border-top: 1px solid var(--uci-border);
+  margin: 1.35rem 0 0.95rem 0;
+}
+/* The resumable process-file action is intentionally lighter than the final
+   HTML-download action. Both its default and hover states retain readable text
+   contrast while remaining visually distinct. */
+.st-key-save_process_file_button [data-testid="stDownloadButton"] button {
+  background-color: var(--uci-light-blue) !important;
+  border-color: var(--uci-light-blue) !important;
+  color: #102a43 !important;
+  font-weight: 600;
+}
+.st-key-save_process_file_button [data-testid="stDownloadButton"] button:hover,
+.st-key-save_process_file_button [data-testid="stDownloadButton"] button:focus-visible {
+  background-color: var(--uci-blue) !important;
+  border-color: var(--uci-blue) !important;
+  color: #ffffff !important;
+}
 .stButton > button[kind="primary"], .stDownloadButton > button[kind="primary"] {
   background-color: var(--uci-blue);
   border-color: var(--uci-blue);
@@ -293,6 +319,146 @@ def inject_runtime_brand_styles() -> None:
         width=0,
     )
 
+def inject_editor_action_sync() -> None:
+    """Flush buffered page edits before actions that depend on reviewed HTML.
+
+    The compact editor deliberately keeps keystrokes inside its iframe while the
+    reviewer is typing. This zero-height helper installs a parent-page click gate
+    that synchronizes pending editor values before replaying state-dependent
+    actions, including reviewed-file downloads.
+    """
+    components.html(
+        r"""
+<script>
+(() => {
+  const parentWindow = window.parent;
+  const doc = parentWindow.document;
+  const REGISTRY_KEY = "__uciBufferedEditors";
+  const PENDING_KEY = "__uciPendingEditorAction";
+  const HANDLER_KEY = "__uciEditorSyncGateHandler";
+  const TIMER_KEY = "__uciEditorSyncGateTimer";
+
+  function registry() {
+    if (!parentWindow[REGISTRY_KEY]) parentWindow[REGISTRY_KEY] = {};
+    return parentWindow[REGISTRY_KEY];
+  }
+
+  function dirtyEntries() {
+    return Object.values(registry()).filter(entry => entry && entry.dirty && typeof entry.flush === "function");
+  }
+
+  function flushEntries(entries) {
+    for (const entry of entries) {
+      try { entry.flush(); } catch (_) { /* A rerender may retire an iframe. */ }
+    }
+  }
+
+  function actionWrapper(target) {
+    return target.closest([
+      '[class*="st-key-ai_action_"]',
+      '.st-key-full_preview_section',
+      '.st-key-export_warnings_section',
+      '.st-key-save_process_file_button',
+      '.st-key-download_reviewed_html_button'
+    ].join(','));
+  }
+
+  function actionSelector(target) {
+    if (target.closest('summary')) return 'summary';
+    if (target.closest('input[type="checkbox"]')) return 'input[type="checkbox"]';
+    if (target.closest('button')) return 'button';
+    if (target.closest('a')) return 'a';
+    return '';
+  }
+
+  function keyClass(wrapper) {
+    return [...wrapper.classList].find(name => name.startsWith('st-key-')) || '';
+  }
+
+  function findReplayTarget(pending) {
+    if (!pending || !pending.keyClass || !pending.selector) return null;
+    const wrapper = doc.querySelector(`.${CSS.escape(pending.keyClass)}`);
+    return wrapper ? wrapper.querySelector(pending.selector) : null;
+  }
+
+  function synchronized(pending) {
+    const state = registry();
+    const required = pending.requiredVersions || {};
+    return Object.entries(required).every(([id, version]) => {
+      const entry = state[id];
+      if (!entry) return false;
+      return !entry.dirty && !entry.awaitingAck && Number(entry.ackedVersion || 0) >= Number(version || 0);
+    });
+  }
+
+  function clearPending() {
+    parentWindow[PENDING_KEY] = null;
+    if (parentWindow[TIMER_KEY]) {
+      parentWindow.clearInterval(parentWindow[TIMER_KEY]);
+      parentWindow[TIMER_KEY] = null;
+    }
+  }
+
+  function replayWhenReady() {
+    if (parentWindow[TIMER_KEY]) return;
+    parentWindow[TIMER_KEY] = parentWindow.setInterval(() => {
+      const pending = parentWindow[PENDING_KEY];
+      if (!pending) return clearPending();
+      const elapsed = Date.now() - Number(pending.startedAt || Date.now());
+      const ready = synchronized(pending);
+      const fallbackReady = elapsed > 1800 && dirtyEntries().length === 0;
+      if (!ready && !fallbackReady && elapsed < 6000) return;
+
+      const replayTarget = findReplayTarget(pending);
+      if (!replayTarget) return;
+      clearPending();
+      replayTarget.dataset.uciSyncBypass = 'true';
+      replayTarget.click();
+      parentWindow.setTimeout(() => delete replayTarget.dataset.uciSyncBypass, 250);
+    }, 120);
+  }
+
+  function handleClick(event) {
+    const rawTarget = event.target;
+    if (!(rawTarget instanceof parentWindow.Element)) return;
+    const interactive = rawTarget.closest('button, a, summary, input[type="checkbox"]');
+    if (!interactive) return;
+    if (interactive.dataset.uciSyncBypass === 'true') return;
+    const wrapper = actionWrapper(interactive);
+    if (!wrapper) return;
+    const entries = dirtyEntries();
+    if (!entries.length) return;
+    const selector = actionSelector(interactive);
+    const wrapperKey = keyClass(wrapper);
+    if (!selector || !wrapperKey) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+
+    parentWindow[PENDING_KEY] = {
+      keyClass: wrapperKey,
+      selector,
+      startedAt: Date.now(),
+      requiredVersions: Object.fromEntries(entries.map(entry => [entry.id, Number(entry.localVersion || 0)]))
+    };
+    flushEntries(entries);
+    replayWhenReady();
+  }
+
+  if (parentWindow[HANDLER_KEY]) {
+    doc.removeEventListener('click', parentWindow[HANDLER_KEY], true);
+  }
+  parentWindow[HANDLER_KEY] = handleClick;
+  doc.addEventListener('click', handleClick, true);
+  replayWhenReady();
+})();
+</script>
+        """,
+        height=0,
+        width=0,
+    )
+
 def render_page_header() -> None:
     logo_data_url = get_logo_data_url()
     image = f'<img src="{logo_data_url}" alt="UC Irvine Libraries">' if logo_data_url else ""
@@ -314,6 +480,7 @@ def render_page_header() -> None:
 
 
 def render_sidebar(config: AppConfig) -> int:
+    render_dpi = int(st.session_state.get("render_dpi", 180))
     with st.sidebar:
         st.header("Settings")
         st.subheader("Prototype access")
@@ -330,6 +497,23 @@ def render_sidebar(config: AppConfig) -> int:
             )
             st.caption(
                 f"Optional. The AI-assisted page correction feature uses model **{OPENAI_DEFAULT_MODEL}** and sends the current page image and current page HTML to OpenAI only when you press the AI-assisted Correction button for that page."
+            )
+
+            st.subheader("PDF page images")
+            render_dpi = st.slider(
+                "Render DPI",
+                min_value=120,
+                max_value=240,
+                value=render_dpi,
+                step=20,
+                key="render_dpi",
+                help="Higher values make the original-page screenshot sharper but use more memory.",
+            )
+
+            st.subheader("Review notice")
+            st.write(
+                "The AWS-generated HTML is loaded directly into this review screen. "
+                "Use Save Process File during longer reviews so you can resume later without losing edits."
             )
         else:
             entered_key = st.text_input(
@@ -349,31 +533,31 @@ def render_sidebar(config: AppConfig) -> int:
                 else:
                     st.error("Invalid access key.")
 
-        st.subheader("Document limits")
-        st.markdown(
-            f"""
-- PDF documents only
-- Maximum file size: **{config.max_file_mb} MB**
-- Maximum length: **{config.max_pages} pages**
-- Upload one document at a time
-            """
-        )
+            st.markdown("---")
+            st.subheader("Resume saved review")
+            saved_process_file = st.file_uploader(
+                "Load a saved process file",
+                type=["ucipdfreview", "zip"],
+                accept_multiple_files=False,
+                key="saved_process_file_uploader",
+                help="Resume a previously saved local review workspace without reprocessing the PDF through AWS.",
+            )
+            if st.button("Load Saved Process File", type="primary", use_container_width=True):
+                if saved_process_file is None:
+                    st.error("Choose a saved process file first.")
+                else:
+                    try:
+                        load_saved_process_file_into_session(saved_process_file.getvalue())
+                        st.rerun()
+                    except ProcessFileError as exc:
+                        st.error(str(exc))
+                    except Exception as exc:
+                        st.error(f"Unexpected saved-process-file error: {exc}")
+            st.caption(
+                "A saved process file contains the document text, images, embedded Base64 assets, and your edits. "
+                "Treat it as a local copy of the reviewed document."
+            )
 
-        st.subheader("PDF page images")
-        render_dpi = st.slider(
-            "Render DPI",
-            min_value=120,
-            max_value=240,
-            value=180,
-            step=20,
-            help="Higher values make the original-page screenshot sharper but use more memory.",
-        )
-
-        st.subheader("Review notice")
-        st.write(
-            "The AWS-generated HTML is loaded directly into this review screen. "
-            "Download the reviewed HTML before leaving the page because edits are not saved after the session ends."
-        )
         st.markdown("---")
         st.caption(
             "This tool is a customized version of the "
@@ -477,7 +661,7 @@ def wait_for_html(s3, config: AppConfig, output_key: str) -> bytes:
 
 
 def clear_review_state() -> None:
-    preserved = {"access_granted", "sidebar_access_key", "openai_api_key"}
+    preserved = {"access_granted", "sidebar_access_key", "openai_api_key", "render_dpi"}
     for key in list(st.session_state):
         if key not in preserved:
             del st.session_state[key]
@@ -536,9 +720,14 @@ def initialize_review_state(
     pdf_bytes: bytes,
     html_bytes: bytes,
     page_meta: list[dict],
+    edited_fragments: Dict[str, str] | None = None,
+    document_title: str | None = None,
+    resumed_from_process_file: bool = False,
+    saved_at_utc: str = "",
 ) -> None:
     review_document = prepare_review_document(decode_html_bytes(html_bytes), len(page_meta))
     review_id = uuid.uuid4().hex[:10]
+    edited_fragments = edited_fragments or {}
     st.session_state["review_id"] = review_id
     st.session_state["uploaded_name"] = uploaded_name
     st.session_state["job_filename"] = job_filename
@@ -548,11 +737,19 @@ def initialize_review_state(
     st.session_state["original_generated_html_bytes"] = html_bytes
     st.session_state["page_meta"] = page_meta
     st.session_state["review_document"] = review_document
-    st.session_state["document_title_key"] = review_document["document_title"]
+    st.session_state["document_title_key"] = document_title or review_document["document_title"]
     st.session_state["document_outline"] = build_document_outline(review_document)
+    st.session_state["resumed_from_process_file"] = resumed_from_process_file
+    st.session_state["saved_process_file_saved_at_utc"] = saved_at_utc
     for fragment in review_document["fragments"]:
         element_id = fragment["element_id"]
-        st.session_state[fragment_value_key(review_id, element_id)] = fragment["html"]
+        current_fragment = edited_fragments.get(element_id, fragment["html"])
+        current_fragment, _ = enforce_protected_image_presentation(
+            current_fragment,
+            review_document.get("protected_image_presentation", {}),
+        )
+        st.session_state[fragment_value_key(review_id, element_id)] = current_fragment
+        # A resumed review intentionally receives a fresh one-click AI allowance per page.
         st.session_state[ai_applied_key(review_id, element_id)] = False
         st.session_state[ai_summary_key(review_id, element_id)] = []
         st.session_state[ai_notes_key(review_id, element_id)] = []
@@ -562,6 +759,27 @@ def initialize_review_state(
         st.session_state[ai_validation_key(review_id, element_id)] = []
         st.session_state[ai_error_key(review_id, element_id)] = ""
         st.session_state[ai_restored_key(review_id, element_id)] = False
+
+
+def load_saved_process_file_into_session(process_file_bytes: bytes) -> None:
+    """Resume a local review workspace without calling AWS."""
+    loaded = load_process_file_bytes(process_file_bytes)
+    clear_review_state()
+    st.session_state["access_granted"] = True
+    st.session_state["render_dpi"] = loaded.get("render_dpi", 180)
+    initialize_review_state(
+        uploaded_name=loaded["uploaded_name"],
+        job_filename=loaded["job_filename"],
+        upload_key=loaded["upload_key"],
+        output_key=loaded["output_key"],
+        pdf_bytes=loaded["original_pdf_bytes"],
+        html_bytes=loaded["original_generated_html_bytes"],
+        page_meta=loaded["page_meta"],
+        edited_fragments=loaded["edited_fragments"],
+        document_title=loaded["document_title"],
+        resumed_from_process_file=True,
+        saved_at_utc=loaded.get("saved_at_utc", ""),
+    )
 
 
 def current_edited_fragments() -> Dict[str, str]:
@@ -717,13 +935,19 @@ def render_review_workspace() -> None:
     review_id = st.session_state["review_id"]
     uploaded_name = st.session_state["uploaded_name"]
 
-    action_left, action_right = st.columns([1, 5])
-    with action_left:
-        if st.button("Start over", use_container_width=True):
-            clear_review_state()
-            st.rerun()
-    with action_right:
-        st.success(f"Generated HTML is ready for review: **{uploaded_name}**")
+    resumed_from_process_file = st.session_state.get("resumed_from_process_file", False)
+    if resumed_from_process_file:
+        # A resumed workspace is intentionally opened before the shared access-key unlock.
+        # Do not expose Start over here, because that could reveal the fresh-upload workflow.
+        st.success(f"Saved review workspace resumed: **{uploaded_name}**")
+    else:
+        action_left, action_right = st.columns([1, 5])
+        with action_left:
+            if st.button("Start over", use_container_width=True):
+                clear_review_state()
+                st.rerun()
+        with action_right:
+            st.success(f"Generated HTML is ready for review: **{uploaded_name}**")
 
     st.markdown(
         """
@@ -760,15 +984,16 @@ remains available as a fallback download. Your reviewed file is assembled in mem
             if fragment is not None:
                 button_col_fill, button_col_ai, button_col_restore = st.columns([3.7, 1.2, 1.1])
                 with button_col_ai:
-                    ai_disabled = st.session_state.get(ai_applied_key(review_id, fragment["element_id"]), False)
-                    if st.button(
-                        "AI-assisted Correction",
-                        key=f"ai_correct_{review_id}_{fragment['element_id']}",
-                        disabled=ai_disabled,
-                        use_container_width=True,
-                    ):
-                        run_ai_assisted_correction(fragment, page_meta_lookup[page_number])
-                        st.rerun()
+                    with st.container(key=f"ai_action_{review_id}_{fragment['element_id']}"):
+                        ai_disabled = st.session_state.get(ai_applied_key(review_id, fragment["element_id"]), False)
+                        if st.button(
+                            "AI-assisted Correction",
+                            key=f"ai_correct_{review_id}_{fragment['element_id']}",
+                            disabled=ai_disabled,
+                            use_container_width=True,
+                        ):
+                            run_ai_assisted_correction(fragment, page_meta_lookup[page_number])
+                            st.rerun()
                 with button_col_restore:
                     if st.button(
                         "Restore Original Page",
@@ -828,18 +1053,66 @@ remains available as a fallback download. Your reviewed file is assembled in mem
     reviewed_html_bytes = reviewed_html.encode("utf-8")
     base_name = Path(uploaded_name).stem
 
-    st.subheader("Download")
-    st.write("Download the reviewed HTML before closing this tab. The reviewed file is not written back to S3.")
+    st.markdown('<hr class="review-section-divider">', unsafe_allow_html=True)
+
+    with st.container(key="full_preview_section"):
+        with st.expander("Preview complete reviewed HTML"):
+            st.caption("This preview reflects the merged document that will download from the reviewed HTML button.")
+            if st.checkbox("Render complete document preview", key=f"full_preview_{review_id}"):
+                components.html(build_document_preview(reviewed_html), height=800, scrolling=True)
+
+    with st.container(key="export_warnings_section"):
+        with st.expander("Review export warnings"):
+            if export_warnings:
+                st.write("These checks are warnings, not blockers. Review them before publishing the file.")
+                for warning in export_warnings:
+                    st.warning(warning)
+            else:
+                st.success("No export warnings were detected by the current automated checks.")
+
+    st.subheader("Save or download")
+    st.write(
+        "Save a process file during longer reviews so you can resume later. "
+        "The reviewed HTML and the resumable process file download directly to your computer; neither is written back to S3."
+    )
+    process_file_bytes = build_process_file_bytes(
+        uploaded_name=uploaded_name,
+        job_filename=st.session_state.get("job_filename", ""),
+        upload_key=st.session_state.get("last_upload_key", ""),
+        output_key=st.session_state.get("last_output_key", ""),
+        original_pdf_bytes=st.session_state["original_pdf_bytes"],
+        original_generated_html_bytes=st.session_state["original_generated_html_bytes"],
+        reviewed_html_bytes=reviewed_html_bytes,
+        page_meta=page_meta,
+        edited_fragments=edited_fragments,
+        document_title=st.session_state.get("document_title_key", "Accessible HTML Alternative"),
+        render_dpi=int(st.session_state.get("render_dpi", 180)),
+    )
+    with st.container(key="save_process_file_button"):
+        st.download_button(
+            "Save Process File for Later Review",
+            data=process_file_bytes,
+            file_name=f"{base_name}_review{PROCESS_FILE_EXTENSION}",
+            mime="application/zip",
+            use_container_width=True,
+            help="Includes the original PDF, original AWS-generated HTML, embedded Base64 assets, rendered page images, page metadata, and your current page edits.",
+        )
+    st.caption(
+        "The saved process file contains a complete local working copy of the document. "
+        "Store it securely and load it from the Settings panel before unlocking the app when you want to resume."
+    )
+
     col_reviewed, col_original = st.columns(2)
     with col_reviewed:
-        st.download_button(
-            "Download Reviewed HTML File",
-            data=reviewed_html_bytes,
-            file_name=f"{base_name}_reviewed.html",
-            mime="text/html",
-            type="primary",
-            use_container_width=True,
-        )
+        with st.container(key="download_reviewed_html_button"):
+            st.download_button(
+                "Download Reviewed HTML File",
+                data=reviewed_html_bytes,
+                file_name=f"{base_name}_reviewed.html",
+                mime="text/html",
+                type="primary",
+                use_container_width=True,
+            )
     with col_original:
         st.download_button(
             "Download Original AWS-Generated HTML",
@@ -849,18 +1122,15 @@ remains available as a fallback download. Your reviewed file is assembled in mem
             use_container_width=True,
         )
 
-    if export_warnings:
-        with st.expander("Review export warnings"):
-            st.write("These checks are warnings, not blockers. Review them before publishing the file.")
-            for warning in export_warnings:
-                st.warning(warning)
+    # Install the parent-page gate after the state-dependent controls exist.
+    # Pending editor values are synchronized before those controls are replayed.
+    inject_editor_action_sync()
 
-    with st.expander("Preview complete reviewed HTML"):
-        st.caption("This preview reflects the merged document that will download from the reviewed HTML button.")
-        if st.checkbox("Render complete document preview", key=f"full_preview_{review_id}"):
-            components.html(build_document_preview(reviewed_html), height=800, scrolling=True)
-
-    with st.expander("Processing details"):
+    st.subheader("Processing information")
+    st.write(
+        "Technical details about the current workspace are available below for troubleshooting and audit reference."
+    )
+    with st.expander("View processing details"):
         st.code(
             "\n".join(
                 [
@@ -868,6 +1138,7 @@ remains available as a fallback download. Your reviewed file is assembled in mem
                     f"Generated: {st.session_state.get('last_output_key', '')}",
                     f"OpenAI page correction model: {OPENAI_DEFAULT_MODEL}",
                     "Reviewed HTML: assembled in the active Streamlit session and downloaded directly",
+                    "Saved process file: local resumable archive; not written back to S3",
                 ]
             )
         )
@@ -878,10 +1149,20 @@ def render_upload_screen(config: AppConfig, render_dpi: int) -> None:
         "Upload a PDF document",
         type=["pdf"],
         accept_multiple_files=False,
-        help=f"Maximum {config.max_file_mb} MB and {config.max_pages} pages.",
+        help=(
+            f"Maximum backend processing PDF file size: {config.max_file_mb} MB. "
+            f"Maximum backend processing length per PDF: {config.max_pages} pages."
+        ),
+    )
+    st.info(
+        f"""**Upload a PDF to begin.**
+
+- Maximum backend processing PDF file size: **{config.max_file_mb} MB**
+- Maximum backend processing length per PDF: **{config.max_pages} pages**
+- Upload one PDF at a time
+"""
     )
     if uploaded_file is None:
-        st.info("Upload a PDF to begin.")
         return
 
     if st.button("Convert and Review HTML", type="primary"):
@@ -904,6 +1185,7 @@ def render_upload_screen(config: AppConfig, render_dpi: int) -> None:
                     pdf_bytes=pdf_bytes,
                     html_bytes=html_bytes,
                     page_meta=page_meta,
+                    resumed_from_process_file=False,
                 )
                 status.update(label="Review workspace is ready.", state="complete")
             st.rerun()

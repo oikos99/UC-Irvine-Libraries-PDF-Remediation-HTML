@@ -44,7 +44,12 @@
       border-radius: 4px;
       background: var(--panel-bg);
       overscroll-behavior: contain;
+      cursor: grab;
+      touch-action: none;
+      user-select: none;
     }
+    .viewer, .viewer *, .canvas, .page-image { cursor: grab; }
+    .viewer.is-panning, .viewer.is-panning *, .viewer.is-panning .canvas, .viewer.is-panning .page-image { cursor: grabbing !important; }
     .canvas { min-width: 100%; min-height: 100%; padding: .6rem; }
     .page-image {
       display: block;
@@ -54,6 +59,9 @@
       margin: 0 auto;
       box-shadow: 0 1px 4px rgba(16, 42, 67, .2);
       background: white;
+      pointer-events: none;
+      user-select: none;
+      -webkit-user-drag: none;
     }
   </style>
 </head>
@@ -64,7 +72,7 @@
     <button id="zoomIn" type="button" aria-label="Zoom in original PDF page">+ Zoom in</button>
     <span id="zoomLabel" class="zoom-label" aria-live="polite">100%</span>
   </div>
-  <p class="hint">Zoom in to inspect small text. Scroll inside the image panel to move around the page.</p>
+  <p class="hint">Zoom in to inspect small text. Drag the image to pan, or use the scrollbars to move around the page.</p>
   <div id="viewer" class="viewer" tabindex="0" aria-label="Zoomable original PDF page image">
     <div class="canvas">
       <img id="pageImage" class="page-image" alt="">
@@ -87,6 +95,12 @@
     const MAX_ZOOM = 4;
     const ZOOM_STEP = 0.25;
     let zoom = 1;
+    let isPanning = false;
+    let activePointerId = null;
+    let panStartX = 0;
+    let panStartY = 0;
+    let panStartScrollLeft = 0;
+    let panStartScrollTop = 0;
 
     function sendMessage(type, data = {}) {
       window.parent.postMessage({ isStreamlitMessage: true, type, ...data }, "*");
@@ -135,6 +149,80 @@
     zoomOutButton.addEventListener("click", () => applyZoom(zoom - ZOOM_STEP));
     zoomInButton.addEventListener("click", () => applyZoom(zoom + ZOOM_STEP));
     fitWidthButton.addEventListener("click", () => applyZoom(1, false));
+
+    function stopPanning(pointerId = activePointerId) {
+      if (!isPanning) return;
+      isPanning = false;
+      viewer.classList.remove("is-panning");
+      if (pointerId !== null && viewer.hasPointerCapture && viewer.hasPointerCapture(pointerId)) {
+        viewer.releasePointerCapture(pointerId);
+      }
+      activePointerId = null;
+    }
+
+    function beginPan(clientX, clientY, pointerId = null) {
+      isPanning = true;
+      activePointerId = pointerId;
+      panStartX = clientX;
+      panStartY = clientY;
+      panStartScrollLeft = viewer.scrollLeft;
+      panStartScrollTop = viewer.scrollTop;
+      viewer.classList.add("is-panning");
+      viewer.focus({ preventScroll: true });
+    }
+
+    function updatePan(clientX, clientY) {
+      if (!isPanning) return;
+      viewer.scrollLeft = panStartScrollLeft - (clientX - panStartX);
+      viewer.scrollTop = panStartScrollTop - (clientY - panStartY);
+    }
+
+    // Mouse-specific handlers are intentionally present even in browsers with
+    // Pointer Events. This keeps click-and-drag panning reliable inside the
+    // Streamlit component iframe.
+    viewer.addEventListener("mousedown", event => {
+      if (event.button !== 0) return;
+      beginPan(event.clientX, event.clientY, null);
+      event.preventDefault();
+    });
+
+    window.addEventListener("mousemove", event => {
+      if (!isPanning || activePointerId !== null) return;
+      updatePan(event.clientX, event.clientY);
+      event.preventDefault();
+    });
+
+    window.addEventListener("mouseup", event => {
+      if (event.button !== 0 || activePointerId !== null) return;
+      stopPanning(null);
+    });
+
+    // Pointer handlers preserve touch and pen support. Mouse is handled above
+    // to avoid browser-specific pointer-capture behavior inside iframes.
+    viewer.addEventListener("pointerdown", event => {
+      if (event.pointerType === "mouse") return;
+      beginPan(event.clientX, event.clientY, event.pointerId);
+      if (viewer.setPointerCapture) viewer.setPointerCapture(event.pointerId);
+      event.preventDefault();
+    });
+
+    viewer.addEventListener("pointermove", event => {
+      if (!isPanning || activePointerId === null || event.pointerId !== activePointerId) return;
+      updatePan(event.clientX, event.clientY);
+      event.preventDefault();
+    });
+
+    viewer.addEventListener("pointerup", event => {
+      if (event.pointerId === activePointerId) stopPanning(event.pointerId);
+    });
+    viewer.addEventListener("pointercancel", event => {
+      if (event.pointerId === activePointerId) stopPanning(event.pointerId);
+    });
+    viewer.addEventListener("lostpointercapture", () => {
+      if (activePointerId !== null) stopPanning(activePointerId);
+    });
+    window.addEventListener("blur", () => stopPanning());
+    pageImage.addEventListener("dragstart", event => event.preventDefault());
 
     viewer.addEventListener("keydown", event => {
       if ((event.ctrlKey || event.metaKey) && ["+", "=", "-", "0"].includes(event.key)) {

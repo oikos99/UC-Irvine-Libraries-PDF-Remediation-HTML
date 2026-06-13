@@ -10,7 +10,7 @@ import streamlit.components.v1 as components
 _COMPONENT_PATH = Path(__file__).parent / "components" / "zoomable_pdf_panel"
 _COMPONENT_AVAILABLE = _COMPONENT_PATH.is_dir() and (_COMPONENT_PATH / "index.html").is_file()
 _component = (
-    components.declare_component("zoomable_pdf_panel", path=str(_COMPONENT_PATH))
+    components.declare_component("zoomable_pdf_panel_drag_pan_v2", path=str(_COMPONENT_PATH))
     if _COMPONENT_AVAILABLE
     else None
 )

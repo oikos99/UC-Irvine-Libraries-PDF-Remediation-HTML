@@ -14,7 +14,9 @@
     }
     * { box-sizing: border-box; }
     body { margin: 0; font-family: Arial, sans-serif; color: var(--editor-text); background: transparent; }
-    .toolbar { display: flex; gap: 0; margin-bottom: .45rem; }
+    .toolbar { display: flex; gap: 0; margin-bottom: .45rem; align-items: center; flex-wrap: wrap; }
+    .sync-status { margin-left: .65rem; color: #52606d; font-size: .78rem; }
+    .sync-status.dirty { color: #7a4b00; font-weight: 600; }
     .toolbar button {
       border: 1px solid var(--uci-blue);
       background: white;
@@ -71,8 +73,9 @@
   <div class="toolbar" role="group" aria-label="HTML view mode">
     <button id="previewButton" type="button" class="active" aria-pressed="true">Preview HTML</button>
     <button id="editButton" type="button" aria-pressed="false">Edit HTML source</button>
+    <span id="syncStatus" class="sync-status" role="status" aria-live="polite">Page edits synchronized</span>
   </div>
-  <p class="hint" id="hint">Embedded Base64 images appear as compact protected tokens. Edit the surrounding HTML normally.</p>
+  <p class="hint" id="hint">Embedded Base64 images appear as compact protected tokens. Edit the surrounding HTML normally. Changes synchronize when you leave the editor or select Preview HTML.</p>
   <div id="editor" class="editor hidden" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Editable HTML source" spellcheck="false"></div>
   <div id="previewWrap" class="preview-wrap">
     <iframe id="preview" class="preview" title="Rendered HTML preview" sandbox=""></iframe>
@@ -89,15 +92,62 @@
     const previewFrame = document.getElementById("preview");
     const editButton = document.getElementById("editButton");
     const previewButton = document.getElementById("previewButton");
+    const syncStatus = document.getElementById("syncStatus");
 
     let currentValue = "";
     let lastSentValue = null;
     let tokenMap = new Map();
     let previewStyles = "";
     let mode = "preview";
-    let debounceTimer = null;
+    let dirty = false;
     let previewObjectUrl = null;
     let hasReceivedInitialRender = false;
+    let editorId = "";
+    let localVersion = 0;
+
+    function getParentRegistry() {
+      const parentWindow = window.parent;
+      if (!parentWindow.__uciBufferedEditors) parentWindow.__uciBufferedEditors = {};
+      return parentWindow.__uciBufferedEditors;
+    }
+
+    function updateParentRegistry() {
+      if (!editorId) return;
+      const registry = getParentRegistry();
+      const existing = registry[editorId] || {};
+      registry[editorId] = {
+        ...existing,
+        id: editorId,
+        dirty,
+        value: currentValue,
+        localVersion,
+        ackedVersion: existing.ackedVersion || 0,
+        awaitingAck: Boolean(existing.awaitingAck),
+        pendingValue: existing.pendingValue || "",
+        mounted: true,
+        flush: () => sendImmediately(),
+        updatedAt: Date.now(),
+      };
+    }
+
+    function acknowledgeParentRegistry() {
+      if (!editorId) return;
+      const registry = getParentRegistry();
+      const existing = registry[editorId] || {};
+      registry[editorId] = {
+        ...existing,
+        id: editorId,
+        dirty,
+        value: currentValue,
+        localVersion,
+        ackedVersion: Math.max(existing.ackedVersion || 0, localVersion),
+        awaitingAck: false,
+        pendingValue: "",
+        mounted: true,
+        flush: () => sendImmediately(),
+        updatedAt: Date.now(),
+      };
+    }
 
     function sendMessage(type, data = {}) {
       window.parent.postMessage({ isStreamlitMessage: true, type, ...data }, "*");
@@ -107,9 +157,38 @@
       sendMessage(SET_FRAME_HEIGHT, { height });
     }
 
+    function setDirty(isDirty) {
+      dirty = Boolean(isDirty);
+      syncStatus.textContent = dirty ? "Unsaved page edits" : "Page edits synchronized";
+      syncStatus.classList.toggle("dirty", dirty);
+      updateParentRegistry();
+    }
+
     function sendValue(value) {
       currentValue = value;
+      if (value === lastSentValue) {
+        setDirty(false);
+        return;
+      }
       lastSentValue = value;
+      setDirty(false);
+      if (editorId) {
+        const registry = getParentRegistry();
+        const existing = registry[editorId] || {};
+        registry[editorId] = {
+          ...existing,
+          id: editorId,
+          dirty: false,
+          value,
+          localVersion,
+          ackedVersion: existing.ackedVersion || 0,
+          awaitingAck: true,
+          pendingValue: value,
+          mounted: true,
+          flush: () => sendImmediately(),
+          updatedAt: Date.now(),
+        };
+      }
       sendMessage(SET_COMPONENT_VALUE, { value, dataType: "json" });
     }
 
@@ -149,6 +228,7 @@
       editor.replaceChildren();
       appendTextWithTokens(editor, value || "");
       currentValue = value || "";
+      setDirty(false);
     }
 
     function serializeNode(node) {
@@ -169,13 +249,13 @@
       return value.replace(/\n$/, "");
     }
 
-    function queueSend() {
-      clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => sendValue(serializeEditor()), 250);
+    function markEditorDirty() {
+      currentValue = serializeEditor();
+      localVersion += 1;
+      setDirty(true);
     }
 
     function sendImmediately() {
-      clearTimeout(debounceTimer);
       sendValue(serializeEditor());
     }
 
@@ -190,7 +270,7 @@
       range.collapse(true);
       selection.removeAllRanges();
       selection.addRange(range);
-      queueSend();
+      markEditorDirty();
     }
 
     function restoreTokens(value) {
@@ -266,11 +346,13 @@ table { max-width: 100%; border-collapse: collapse; }
     }
 
     function showPreview() {
-      // Render from the editor DOM immediately. Do not force a Streamlit rerun
-      // during the view switch; queued edit synchronization remains separate.
+      // Render from the editor DOM immediately, then synchronize once. Keeping
+      // keystrokes local while the field is active avoids Streamlit reruns that
+      // can steal focus and drop characters during typing.
       currentValue = serializeEditor();
       mode = "preview";
       refreshPreview();
+      sendValue(currentValue);
       editor.classList.add("hidden");
       previewWrap.classList.remove("hidden");
       previewButton.classList.add("active");
@@ -280,7 +362,10 @@ table { max-width: 100%; border-collapse: collapse; }
       reportFrameHeight();
     }
 
-    editor.addEventListener("input", queueSend);
+    editor.addEventListener("input", markEditorDirty);
+    editor.addEventListener("blur", () => {
+      if (dirty) sendImmediately();
+    });
     editor.addEventListener("paste", event => {
       event.preventDefault();
       insertPlainText(event.clipboardData.getData("text/plain"));
@@ -298,6 +383,11 @@ table { max-width: 100%; border-collapse: collapse; }
       if (!event.data || event.data.type !== RENDER) return;
       const args = event.data.args || {};
       const incomingValue = typeof args.value === "string" ? args.value : "";
+      editorId = typeof args.editor_id === "string" ? args.editor_id : editorId;
+      if (editorId) {
+        const existing = getParentRegistry()[editorId] || {};
+        localVersion = Math.max(localVersion, existing.localVersion || 0);
+      }
       tokenMap = new Map((args.tokens || []).map(meta => [meta.token, meta]));
       previewStyles = typeof args.preview_styles === "string" ? args.preview_styles : "";
       const height = Number(args.height || 650);
@@ -329,8 +419,22 @@ table { max-width: 100%; border-collapse: collapse; }
         currentValue = serialized;
       }
 
+      const registryEntry = editorId ? (getParentRegistry()[editorId] || {}) : {};
+      const parentAcknowledgedBufferedValue = Boolean(
+        registryEntry.awaitingAck && incomingValue === registryEntry.pendingValue
+      );
+      if (parentAcknowledgedLocalValue || parentAcknowledgedBufferedValue) acknowledgeParentRegistry();
+      else updateParentRegistry();
+
       if (mode === "preview") refreshPreview();
       reportFrameHeight();
+    });
+
+    window.addEventListener("beforeunload", () => {
+      if (!editorId) return;
+      const registry = getParentRegistry();
+      const existing = registry[editorId] || {};
+      registry[editorId] = { ...existing, mounted: false, flush: null, updatedAt: Date.now() };
     });
 
     sendMessage(COMPONENT_READY, { apiVersion: 1 });

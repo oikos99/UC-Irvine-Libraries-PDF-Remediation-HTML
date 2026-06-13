@@ -1,4 +1,27 @@
+## v25
+
+- Hide the **Document limits** sidebar section after a saved `.ucipdfreview` workspace is loaded, since no new PDF upload is needed during a resumed review.
+
+## v24
+
+- Style **Save Process File for Later Review** with UC Irvine light blue (`#78b9e6`) and dark readable text; use UC Irvine dark blue with white text for hover and keyboard focus.
+- Move **Preview complete reviewed HTML** and **Review export warnings** directly below the page-review accordions, separated from the pages by a subtle divider.
+- Always display the export-warning expander and show a no-warning confirmation when no automated warnings are present.
+- Add a dedicated **Processing information** section with a collapsed **View processing details** expander at the end of the workspace.
+- Hide document limits, PDF-page rendering controls, and the review notice until the shared access key has been unlocked.
+- Style **Load Saved Process File** as a primary action so its default and hover colors match **Unlock**.
+
 # Changelog
+
+## v23
+
+- Add **Save Process File for Later Review** so staff can pause a long remediation session and download a resumable local `.ucipdfreview` archive.
+- Store the original PDF, original AWS-generated HTML including embedded Base64 assets, rendered page images, page geometry, current edited page fragments, document title, AWS handoff metadata, and a reviewed-HTML snapshot in the process file.
+- Add checksums and archive-size guards when loading saved process files.
+- Show **Resume saved review** only before access-key unlock. Loading a valid process file reconstructs the review workspace locally without calling AWS.
+- Preserve the original AWS-generated baseline after resume so **Restore Original Page** continues to work.
+- Intentionally reset AI-assisted-correction click state after resume so pages receive a fresh one-click AI allowance.
+- Leave drag-to-pan behavior unchanged while prioritizing the save-and-resume workflow.
 
 ## v16
 
@@ -95,3 +118,34 @@
 - Removed an overbroad slider CSS selector that painted the slider value bubble blue and reduced numeric readability.
 - Kept the runtime UCI-blue gradient synchronizer for the actual slider track.
 - Preserved the blue slider thumb and readable blue value text on the normal background.
+
+## v22
+- Versioned the zoomable PDF custom component name to force Streamlit Cloud and browsers to load the updated iframe instead of a cached earlier copy.
+- Added reliable mouse click-and-drag panning handlers for desktop browsers.
+- Retained pointer-event panning for touch and pen input.
+- Applied grab and grabbing cursors explicitly throughout the PDF viewer surface.
+
+## v26
+- Hide **Start over** when a workspace was resumed from a saved `.ucipdfreview` process file.
+- Prevent the resumed-workspace path from exposing the fresh PDF-upload workflow before the shared access key is unlocked.
+
+## v27
+- Removed the document-limit bullet list from the Settings sidebar.
+- Moved the backend PDF constraints into the main upload area beside the file uploader.
+- Clarified that the limits are backend-processing limits: 100 MB per PDF and 100 pages per PDF.
+- Set Streamlit's native `server.maxUploadSize` to 100 MB so the uploader's built-in size label matches the backend limit instead of showing 200 MB.
+
+## v28
+- Fixed glitchy HTML source typing caused by sending a custom-component update to Streamlit after every 250 ms typing pause.
+- HTML source keystrokes now remain local while the editor is active.
+- Page HTML synchronizes when the reviewer leaves the editor or selects Preview HTML.
+- Added a small synchronization status next to the editor mode controls.
+- Versioned the compact editor component registration to force browsers and Streamlit Cloud to load the revised iframe.
+
+## v29
+- Added an automatic buffered-editor synchronization gate for every action that depends on the current reviewed HTML.
+- Pending page edits now synchronize before AI-assisted Correction, the complete-document preview, export-warning review, Save Process File for Later Review, and Download Reviewed HTML File.
+- State-dependent actions are replayed automatically after synchronization, so reviewers no longer need to click outside the editor or switch to Preview HTML first.
+- Kept Restore Original Page unsynchronized intentionally because it discards the current working fragment by design.
+- Kept Download Original AWS-Generated HTML independent of current edits because it downloads the untouched Lambda baseline.
+- Versioned the compact HTML editor component registration to load the synchronized buffered-editor build.

@@ -11,8 +11,9 @@ A Streamlit frontend for the existing UC Irvine Libraries AWS PDF-to-HTML access
 5. The app displays each original PDF page screenshot beside its editable generated HTML page container.
 6. Staff can switch each page between source-editing mode and rendered-preview mode.
 7. The reviewed complete HTML file is assembled in memory and downloaded directly to the user's computer.
+8. For longer reviews, staff can download a local `.ucipdfreview` process file and resume the same workspace later without reprocessing the PDF through AWS.
 
-The reviewed file is **not** written back to S3. The S3 bucket remains the temporary handoff between the existing frontend and Lambda backend.
+The reviewed HTML and saved process file are **not** written back to S3. The S3 bucket remains the temporary handoff between the existing frontend and Lambda backend.
 
 ## Existing backend contract
 
@@ -29,6 +30,7 @@ This review app uses the same contract as the existing simple HTML-download fron
 - `app.py` — Streamlit orchestration, AWS handoff, and review workspace
 - `html_document.py` — split, preview, validate, and merge the generated HTML page containers
 - `render_pages.py` — render original PDF pages as PNG images in memory
+- `process_file.py` — save and reload resumable local `.ucipdfreview` workspace archives
 - `requirements.txt` — Python dependencies
 - `secrets.toml.example` — Streamlit secrets template
 - `iam/streamlit_s3_policy.json` — same restricted S3 permissions used by the existing simple frontend
@@ -95,9 +97,13 @@ The included IAM policy is intentionally unchanged from the existing simple fron
 
 The review app does not need permission to write reviewed HTML files to S3.
 
-## Session limitation
+## Save and resume longer reviews
 
-The reviewed HTML exists only in the active Streamlit session until the user downloads it. Closing the browser tab, resetting the app, or redeploying the app can discard unsaved edits.
+The active review still lives in the current Streamlit session, but staff no longer need to finish in one sitting. Select **Save Process File for Later Review** before leaving the page. The downloaded `.ucipdfreview` file contains the original PDF, original AWS-generated HTML including embedded Base64 assets, rendered page images, page metadata, the current browser title, and the current edited page fragments.
+
+To resume later, open the app while it is still locked, use **Resume saved review** in the Settings sidebar, choose the `.ucipdfreview` file, and select **Load Saved Process File**. The app reconstructs the review workspace locally without uploading the PDF to AWS again. The original AWS-generated fragments remain available, so **Restore Original Page** continues to work. AI-assisted correction click state intentionally resets on resume.
+
+A saved process file contains a complete local copy of the document and should be stored securely.
 
 ## Recommended early testing
 
@@ -155,3 +161,17 @@ The frontend performs deterministic safety validation before applying an AI resu
 ### Protected backend image sizing
 
 The AWS backend calculates each extracted image's relative width from its crop pixels compared with the original PDF page pixels and records values such as `data-bda-relative-width="31.40"` plus an inline width style. The frontend treats this crop geometry as deterministic protected metadata. AI-assisted correction may improve alt text and surrounding semantic structure, but it is not allowed to enlarge, shrink, or restyle the embedded image dimensions. The app re-applies the original protected image presentation after an AI rewrite and again during final export.
+
+### PDF panel panning note
+The zoomable PDF panel retains its horizontal and vertical scrollbars. Drag-to-pan remains experimental and is not required for the save-and-resume workflow.
+
+## Interface organization
+
+Before unlocking, the sidebar shows only the prototype access controls, the saved-process-file loader, and the project footer. After the shared access key is accepted, the sidebar reveals the OpenAI API key field, document limits, PDF-page image DPI control, and review notice.
+
+At the end of the page-by-page review accordions, a subtle divider separates the document-level review area. **Preview complete reviewed HTML** appears first, immediately followed by **Review export warnings**. The **Save or download** section follows those checks. The final **Processing information** section keeps troubleshooting details available without visually competing with the review workflow.
+
+The **Save Process File for Later Review** action uses UC Irvine light blue (`#78b9e6`) with dark text by default and UC Irvine dark blue (`#00508f`) with white text on hover or keyboard focus.
+
+## HTML source editing behavior
+The compact HTML source editor buffers keystrokes locally while the field is active so Streamlit reruns do not interrupt typing. A small status indicator shows whether the current page has unsynchronized edits. Changes synchronize when the reviewer leaves the editor or selects **Preview HTML**. The app also synchronizes pending edits automatically before AI-assisted correction, complete-document preview, export-warning review, saving a `.ucipdfreview` process file, or downloading the reviewed HTML. Reviewers do not need to click outside the editor as a separate step.
